@@ -7,6 +7,9 @@
 #include <unistd.h>
 #include <mysql.h>
 #include <openssl/sha.h>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/buffer.h>
 
 #define RESET   "\033[0m"
 #define RED     "\033[31m"
@@ -504,6 +507,29 @@ bool acceptFriendRequest(long receiverId, long senderId) {
     return mysql_query(conn, query) == 0;
 }
 
+char* Base64Encode(const unsigned char* input, int length) {
+    BIO *bio, *b64;
+    BUF_MEM *bufferPtr;
+
+    b64 = BIO_new(BIO_f_base64());
+    bio = BIO_new(BIO_s_mem());
+    bio = BIO_push(b64, bio);
+
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
+    BIO_write(bio, input, length);
+    BIO_flush(bio);
+
+    BIO_get_mem_ptr(bio, &bufferPtr);
+    BIO_set_close(bio, BIO_NOCLOSE);
+
+    char* output = (char*)malloc(bufferPtr->length + 1);
+    memcpy(output, bufferPtr->data, bufferPtr->length);
+    output[bufferPtr->length] = '\0';
+
+    BIO_free_all(bio);
+    return output;
+}
+
 void* acceptMessage(void *arg) {
     int sock = *(int*)arg;
     free(arg);
@@ -677,6 +703,42 @@ void* acceptMessage(void *arg) {
                 }
             }
             continue;
+        }
+        else if (strncmp(buffer, "getAvatar/", 10) == 0) {
+            long sender = strtol(buffer + 10, nullptr, 10);
+            long reciever = strtol(buffer + 20, nullptr, 10);
+            printf("[AVATAR] Запрос аватарки для user %ld\n", reciever);
+
+            char filepath[256];
+            snprintf(filepath, sizeof(filepath), "avatars/%ld.png", reciever);
+
+            FILE *f = fopen(filepath, "rb");
+            if (f) {
+                fseek(f, 0, SEEK_END);
+                long fileSize = ftell(f);
+                fseek(f, 0, SEEK_SET);
+
+                unsigned char *pngData = malloc(fileSize);
+                fread(pngData, 1, fileSize, f);
+                fclose(f);
+
+                char *b64 = Base64Encode(pngData, fileSize);
+                free(pngData);
+
+                if (b64) {
+                    char response1[131072];
+                    snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E%s", reciever, b64);
+                    pushToUser(sender, response1);
+                    free(b64);
+                    printf("[AVATAR] Отправлена аватарка %ld (%ld байт)\n", reciever, fileSize);
+                }
+            } else {
+                // if theres no avatar - sending null
+                char response1[64];
+                snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E", reciever);
+                pushToUser(sender, response1);
+                printf("[AVATAR] Аватарка %ld не найдена\n", reciever);
+            }
         }
 
         send(sock, response, strlen(response), 0);

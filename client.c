@@ -12,6 +12,12 @@
 #include <netinet/in.h>
 #include <openssl/sha.h>
 #include <sys/socket.h>
+#include <dirent.h>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/buffer.h>
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 #define CONFIG_FILE "conf.txt"
 #define MAX_NAME 23
@@ -66,7 +72,31 @@ long randomId = 0L;
 bool finishedResponse = false;
 long currentFriendId = 0L;
 int messagesCount = 0;
+static Texture2D friendAvatarArr[100] = {0};
 
+// Base64 decode through OpenSSL
+unsigned char* Base64Decode(const char* input, int* out_len) {
+    BIO *bio, *b64;
+    int input_len = strlen(input);
+
+    unsigned char* output = (unsigned char*)malloc(input_len * 3 / 4 + 1);
+    if (!output) return nullptr;
+
+    b64 = BIO_new(BIO_f_base64());
+    bio = BIO_new_mem_buf(input, input_len);
+    bio = BIO_push(b64, bio);
+
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
+    *out_len = BIO_read(bio, output, input_len);
+
+    BIO_free_all(bio);
+
+    if (*out_len <= 0) {
+        free(output);
+        return nullptr;
+    }
+    return output;
+}
 
 //
 //             NETWORK COMMUNICATION
@@ -81,22 +111,38 @@ static int sock = -1;
 static struct sockaddr_in serv_addr;
 bool connected = false;
 
+void sendMessage(const char *message);
 void* recieveMessage(void* arg) {
     char localBuf[BUFFER_SIZE];
+    char fullMessage[131072];  // large buffer
+    int totalReceived = 0;
 
     while (connected) {
         finishedResponse = false;
         memset(localBuf, 0, sizeof(localBuf));
+        memset(fullMessage, 0, sizeof(fullMessage));
+        totalReceived = 0;
 
-        int answerByte = (int)read(sock, localBuf, sizeof(localBuf)-1);
-        if (answerByte <= 0) {
-            connected = false;
-            printf("\n" cYELLOW "connection closed" RESET);
-            break;
+        // reading till got atleast one full answer
+        while (true) {
+            int bytes = read(sock, localBuf, sizeof(localBuf)-1);
+            if (bytes <= 0) {
+                connected = false;
+                printf(cYELLOW "\nconnection closed" RESET);
+                return NULL;
+            }
+
+            memcpy(fullMessage + totalReceived, localBuf, bytes);
+            totalReceived += bytes;
+            fullMessage[totalReceived] = '\0';
+
+            // if the message is too long, we continue reading
+            if (bytes < sizeof(localBuf)-1) {
+                break;  // probably the end of message
+            }
         }
-        localBuf[answerByte] = '\0';
 
-        printf("\n" cYELLOW "got from server: %s" RESET, localBuf);
+        printf(cYELLOW "\n[RAW] got %d bytes from server" RESET, totalReceived);
 
         if (strncmp(localBuf, "save-profile/", 13) == 0) {
             printf("\n" cGREEN "profile successfully saved on server" RESET);
@@ -139,12 +185,15 @@ void* recieveMessage(void* arg) {
                 else friend_.name[0] = '\0';
 
                 friend_.userId = (parts[1]) ? strtol(parts[1], nullptr, 10) : 0;
+                char req[32];
+                snprintf(req, 31, "getAvatar/%ld/%ld", config.userId, friend_.userId);
+                sendMessage(req);
 
-                if (parts[2]) strcpy(friend_.profileDescription, parts[2]);
-                else friend_.profileDescription[0] = '\0';
-
-                if (parts[3]) strcpy(friend_.avatarUrl, parts[3]);
+                if (parts[2]) strcpy(friend_.avatarUrl, parts[2]);
                 else friend_.avatarUrl[0] = '\0';
+
+                if (parts[3]) strcpy(friend_.profileDescription, parts[3]);
+                else friend_.profileDescription[0] = '\0';
 
                 friends[count] = friend_;
                 count++;
@@ -339,7 +388,99 @@ void* recieveMessage(void* arg) {
         }
         else if (strncmp(localBuf, "updateClient/friendRequests", 27) == 0) {
             printf(cGREEN "\nобновляем реквесты в друзья" RESET);
+            // TODO??
+        }
+        if (strncmp(fullMessage, "getAvatarResponse/", 18) == 0) {
+            printf(cGREEN "\n[AVATAR] received (%d bytes)" RESET, totalReceived);
 
+            char *ptr = fullMessage + 18;
+            long userId = strtol(ptr, &ptr, 10);
+
+            if (*ptr == '\x1E') {
+                char *b64_data = ptr + 1;
+
+                int decoded_len = 0;
+                unsigned char* png_data = Base64Decode(b64_data, &decoded_len);
+
+                if (png_data && decoded_len > 1000) {   // minimum
+                    if (!DirectoryExists("avatars")) MakeDirectory("avatars");
+
+                    char filepath[128];
+                    snprintf(filepath, sizeof(filepath), "avatars/%ld.png", userId);
+
+                    FILE *f = fopen(filepath, "wb");
+                    if (f) {
+                        fwrite(png_data, 1, decoded_len, f);
+                        fclose(f);
+                        printf(cGREEN "Аватарка %ld сохранена! Размер: %d байт\n" RESET, userId, decoded_len);
+                    }
+                    /*FILE *f2 = fopen(filepath, "wb");
+                    if (f2) {
+                        fwrite(png_data, 1, decoded_len, f2);
+                        fclose(f2);
+
+                        printf(cGREEN "Файл сохранён: %s (%d байт)\n" RESET, filepath, decoded_len);
+
+                        // Проверка сигнатуры PNG
+                        if (decoded_len > 8) {
+                            if (png_data[0] == 0x89 && png_data[1] == 'P' && png_data[2] == 'N' && png_data[3] == 'G') {
+                                printf(cGREEN "PNG сигнатура корректная\n" RESET);
+                            } else {
+                                printf(cRED "!!! НЕВЕРНАЯ PNG СИГНАТУРА !!! Первые 4 байта: %02X %02X %02X %02X\n" RESET,
+                                       png_data[0], png_data[1], png_data[2], png_data[3]);
+                            }
+                        }
+                    }*/
+                    free(png_data);
+                } else {
+                    printf(cRED "Ошибка декодирования аватарки или пустые данные\n" RESET);
+                }
+            }
+            for (int i = 0; i < 100 && friends[i].userId != 0; i++) {
+                if (friendAvatarArr[i].id != 0) {
+                    UnloadTexture(friendAvatarArr[i]);
+                    friendAvatarArr[i].id = 0;
+                }
+                char path[128];
+                snprintf(path, sizeof(path), "avatars/%ld.png", friends[i].userId);
+
+                if (FileExists(path)) {
+                    /*int width, height, channels;
+
+                    // loading through stb_image
+                    unsigned char* data = stbi_load(path, &width, &height, &channels, 4); // 4 = RGBA
+
+                    if (data == NULL) {
+                        printf(cRED "[AVATAR] stbi_load failed: %s\n" RESET, path);
+                        return NULL;
+                    }
+
+                    // creating image in raylib's style
+                    Image img = {
+                        .data = data,
+                        .width = width,
+                        .height = height,
+                        .mipmaps = 1,
+                        .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+                    };
+
+                    Texture2D texture = LoadTextureFromImage(img);
+
+                    stbi_image_free(data);
+
+                    if (texture.id != 0) {
+                        printf(cGREEN "[AVATAR] ✓ stbi + Raylib success: %s (%dx%d)\n" RESET, path, width, height);
+                    } else {
+                        printf(cRED "[AVATAR] ✗ LoadTextureFromImage failed даже после stb_image\n" RESET);
+                    }*/
+                    // TODO: find a way to properly load image (failed - raylib, stbi)
+                } else {
+                    char req[64];
+                    snprintf(req, sizeof(req), "getAvatar/%ld", friends[i].userId);
+                    sendMessage(req);
+                    printf(cYELLOW "[AVATAR] Запрошена аватарка %ld с сервера\n" RESET, friends[i].userId);
+                }
+            }
         }
 
         finishedResponse = true;
@@ -444,7 +585,7 @@ bool loadConfig(Config *cfg) {
         }
         else if (strcmp(key, "profileDescription") == 0) {
             if (strcmp(value, "null") == 0) {
-                cfg->avatarUrl[0] = '\0';
+                cfg->profileDescription[0] = '\0';
             } else {
                 strncpy(cfg->profileDescription, value, sizeof(cfg->profileDescription)-1);
                 cfg->profileDescription[sizeof(cfg->profileDescription)-1] ='\0';
@@ -545,6 +686,101 @@ void DrawTextBoxed(Font font, const char *text, Rectangle container, float fontS
 //             MAIN METHOD
 //
 
+// go ask grok idk
+int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth,
+             Font font, float fontSize, float spacing)
+{
+    if (!text || !output) return 0;
+
+    output[0] = '\0';
+    int lines = 0;
+    int totalHeight = 0;
+
+    char currentLine[1024] = {0};
+    char testLine[1024] = {0};
+
+    const char* wordStart = text;
+
+    for (const char* p = text; ; ++p) {
+        if (*p == ' ' || *p == '\0' || *p == '\n') {
+            int wordLen = (int)(p - wordStart);
+            char word[512] = {0};
+            if (wordLen > 0) {
+                strncpy(word, wordStart, wordLen);
+                word[wordLen] = '\0';
+            }
+
+            if (currentLine[0] == '\0') {
+                strcpy(currentLine, word);
+            } else {
+                snprintf(testLine, sizeof(testLine), "%s %s", currentLine, word);
+
+                Vector2 size = MeasureTextEx(font, testLine, fontSize, spacing);
+
+                if (size.x > maxLineWidth) {
+                    strcat(output, currentLine);
+                    strcat(output, "\n");
+                    lines++;
+                    totalHeight += (int)fontSize + 6;
+
+                    strcpy(currentLine, word);
+                } else {
+                    strcpy(currentLine, testLine);
+                }
+            }
+
+            wordStart = p + 1;
+
+            if (*p == '\0') break;
+            if (*p == '\n') {
+                strcat(output, currentLine);
+                strcat(output, "\n");
+                lines++;
+                totalHeight += (int)fontSize + 6;
+                currentLine[0] = '\0';
+                wordStart = p + 1;
+            }
+        }
+    }
+
+    if (currentLine[0] != '\0') {
+        strcat(output, currentLine);
+        lines++;
+        totalHeight += (int)fontSize + 6;
+    }
+
+    return totalHeight;
+}
+
+// simplified wrapped text drawer
+void DrawWrappedText(const char* text, Vector2 pos, Font font, float fontSize, float spacing, Color color)
+{
+    char line[1024] = {0};
+    Vector2 currentPos = pos;
+
+    for (const char* p = text; *p; ++p) {
+        if (*p == '\n') {
+            DrawTextEx(font, line, currentPos, fontSize, spacing, color);
+            currentPos.y += fontSize + 6;
+            line[0] = '\0';
+        } else {
+            int len = (int)strlen(line);
+            line[len] = *p;
+            line[len + 1] = '\0';
+        }
+    }
+
+    if (line[0]) {
+        DrawTextEx(font, line, currentPos, fontSize, spacing, color);
+    }
+}
+
+float clamp(float val, float min, float max) {
+    if (val < min) return min;
+    if (val > max) return max;
+    return val;
+}
+
 
 int main(void) {
     InitWindow(1600, 900, "UnChat - BETA 1.0");
@@ -565,6 +801,9 @@ int main(void) {
 
     bool initedNetwork = initNetwork();
     bool loadedConf = loadConfig(&config);
+    char msgBuf[BUFFER_SIZE];
+    snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
+    sendMessage(msgBuf);
     if (!loadedConf || config.isFirstUsed) {
         strcpy(config.userName, "");
         strcpy(config.email, "");
@@ -575,9 +814,6 @@ int main(void) {
         sprintf(message, "getFriendsList/%ld/", config.userId);
         sendMessage(message);
     }
-    char msgBuf[BUFFER_SIZE];
-    snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
-    sendMessage(msgBuf);
 
     char passwordInput[MAX_PASS+1] = {0};
     static int activeField=-1;
@@ -600,8 +836,16 @@ int main(void) {
             printf("\n\ncurrent path: %s\n\n", avatarPathInput);
         }
     }
+    static float scrollOffset = 0.0f;
+    static bool isDraggingScrollbar = false;
 
     while (!WindowShouldClose()) {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f) {
+            int step = 35;
+            scrollOffset -= wheel * (float)step;
+        }
+
         BeginDrawing();
         ClearBackground((Color){ 40, 40, 40, 255 });
 
@@ -643,7 +887,7 @@ int main(void) {
                     continue;
                 }
                 strncpy(config.avatarUrl, "null", 4);
-                if (strlen(config.profileDescription)==0) strncpy(config.profileDescription, "null", 4);
+                if (strlen(config.avatarUrl)==0) strncpy(config.avatarUrl, "null", 4);
 
                 saveConfig(&config);
             }
@@ -712,13 +956,13 @@ int main(void) {
                         const char *savePath = TextFormat("avatars/%ld.png", config.userId);
 
                         // folder is not exist
-                        system("mkdir -p avatars");   // Linux + Windows
+                        system("mkdir -p avatars");
 
                         if (ExportImage(img, savePath)) {
                             printf(cGREEN "\navatar was cropped and saved: %s" RESET, savePath);
 
                             // updating config
-                            snprintf(config.avatarUrl, MAX_AVATAR, "%ld.png", config.userId);
+                            snprintf(config.avatarUrl, MAX_AVATAR, "avatars/%ld.png", config.userId);
 
                             // refreshing texture
                             if (userAvatarTexture.id != 0) UnloadTexture(userAvatarTexture);
@@ -808,9 +1052,9 @@ int main(void) {
                 }
             }
 
-            float startY = 90.0f;
+            float friendStartY = 90.0f;
             for (int i = 0; i < 100 && friends[i].userId != 0; i++) {
-                Rectangle friendRect = { 10, startY, 280, 70 };
+                Rectangle friendRect = { 10, friendStartY, 280, 70 };
 
                 if (CheckCollisionPointRec(GetMousePosition(), friendRect)) {
                     DrawRectangleRec(friendRect, (Color){60, 60, 70, 255});
@@ -829,19 +1073,20 @@ int main(void) {
                 DrawRectangleLinesEx(friendRect, 2, GRAY);
 
                 // friend avatar
-                Rectangle avatarRect2 = { 20, startY + 8, 54, 54 };
-                DrawRectangleRec(avatarRect2, DARKGRAY);
+                Rectangle avatarRect2 = { 20, friendStartY + 8, 54, 54 };
+                DrawTexturePro(friendAvatarArr[i], (Rectangle){0, 0, 54, 54}, avatarRect2, (Vector2){0, 0}, 0.0f, WHITE);
+                //DrawRectangleRec(avatarRect2, DARKGRAY);
                 DrawRectangleLinesEx(avatarRect2, 2, LIGHTGRAY);
 
                 // name + description
-                DrawTextEx(font, friends[i].name, (Vector2){85, startY + 12}, 24, 2, WHITE);
+                DrawTextEx(font, friends[i].name, (Vector2){85, friendStartY + 12}, 24, 2, WHITE);
 
                 if (friends[i].newMessageCount > 0) {
                     char badge[16];
                     snprintf(badge, sizeof(badge), "%d", friends[i].newMessageCount);
 
                     int textW = MeasureText(badge, 20);
-                    Rectangle badgeRect = {240, startY + 12, (float)textW + 12, 24};
+                    Rectangle badgeRect = {240, friendStartY + 12, (float)textW + 12, 24};
 
                     DrawRectangleRec(badgeRect, RED);
                     DrawText(badge, (int)badgeRect.x + 6, (int)badgeRect.y + 4, 20, WHITE);
@@ -852,14 +1097,29 @@ int main(void) {
                     strncpy(shortDesc, friends[i].profileDescription, 70);
                     shortDesc[70] = '\0';
                     if (strlen(friends[i].profileDescription) > 70) strcat(shortDesc, "...");
-                    DrawTextEx(font, shortDesc, (Vector2){85, startY + 42}, 18, 2, LIGHTGRAY);
+                    DrawTextEx(font, shortDesc, (Vector2){85, friendStartY + 42}, 18, 2, LIGHTGRAY);
                 }
 
-                startY += 80;
+                friendStartY += 80;
             }
 
             // chat
             Rectangle chatArea = {310, 80, 980, 700};
+
+            float contentHeight = 0.0f;
+            {
+                for (int i = 0; i < messagesCount; i++) {
+                    Message *m = &messages[i];
+                    const int maxTextW = (int)chatArea.width - 120;
+
+                    char dummy[2048] = {0};
+                    int textH = WrapText(m->message, dummy, sizeof(dummy), maxTextW, font, 22, 2);
+                    contentHeight += (float)textH + 25 + 18;   // text height + indents
+                }
+            }
+            if (contentHeight < 680) scrollOffset = 0;
+            float maxScroll = fmaxf(0.0f, contentHeight - 680);
+            scrollOffset = clamp(scrollOffset, 0.0f, maxScroll);
 
             // chat header
             if (currentFriendId != 0) {
@@ -873,34 +1133,73 @@ int main(void) {
                 DrawTextEx(font, TextFormat("Чат с %s", friendName), (Vector2){330, 50}, 28, 2, WHITE);
             }
 
-            int msgY = 100;
-            for (int i=0; i<messagesCount; i++) {
+            float currentY = 100 - scrollOffset;
+            for (int i = 0; i < messagesCount; i++) {
                 Message *m = &messages[i];
-
                 bool isMine = (m->senderId == config.userId);
 
-                int textWidth = MeasureTextEx(font, m->message, 22, 2).x;
-                int bubbleWidth = textWidth + 40;
+                int maxBubbleWidth = (int)chatArea.width - 80;
+                int maxTextWidth = maxBubbleWidth - 40;
+                char wrapped[2048] = {0};
+                int textHeight = WrapText(m->message, wrapped, sizeof(wrapped), maxTextWidth,
+                                         font, 22, 2);
+                Vector2 tMeasure = MeasureTextEx(font, wrapped, (float)22, 2.0f);
+                maxBubbleWidth = (int)tMeasure.x + 40;
+                int bubbleHeight = textHeight + 25;
 
                 Rectangle bubble = {
-                    isMine ? (chatArea.x + chatArea.width - bubbleWidth - 30) : (chatArea.x + 30),
-                    msgY,
-                    bubbleWidth,
-                    50
+                    isMine ? (chatArea.x + chatArea.width - (float)maxBubbleWidth - 30) : (chatArea.x + 30),
+                    currentY,
+                    (float)maxBubbleWidth,
+                    (float)bubbleHeight
                 };
 
-                Color bubbleColor = isMine ? (Color){0, 120, 215, 255} : (Color){60, 60, 70, 255};
-                DrawRectangleRec(bubble, bubbleColor);
-                DrawRectangleLinesEx(bubble, 2, isMine ? SKYBLUE : LIGHTGRAY);
+                if (bubble.y + (float)bubbleHeight > 120 && bubble.y < 780) {
+                    Color bubbleColor = isMine ? (Color){0, 120, 215, 255} : (Color){60, 60, 70, 255};
 
-                DrawTextEx(font, m->message,
-                           (Vector2){bubble.x + 20, bubble.y + 12},
-                           22, 2, WHITE);
+                    DrawRectangleRec(bubble, bubbleColor);
+                    DrawRectangleLinesEx(bubble, 2, isMine ? SKYBLUE : LIGHTGRAY);
 
-                msgY += 70;
+                    DrawWrappedText(wrapped, (Vector2){bubble.x + 20, bubble.y + 12}, font, 22, 2, WHITE);
+                }
+
+                currentY += (float)bubbleHeight + 18;
             }
-            endChat: ;
 
+            if (contentHeight > 680) {
+                float scrollbarTrackHeight = 680;
+                float scrollbarHeight = (680 / contentHeight) * scrollbarTrackHeight;
+                float scrollbarY = 100 + (scrollOffset / contentHeight) * scrollbarTrackHeight;
+
+                Rectangle scrollbarRect = {
+                    chatArea.x + chatArea.width - 14,
+                    scrollbarY,
+                    10,
+                    scrollbarHeight
+                };
+
+                DrawRectangle((int)chatArea.x + chatArea.width - 14, 100, 10, 680, Fade(BLACK, 0.3f));
+
+                Color sbColor = isDraggingScrollbar ? WHITE : LIGHTGRAY;
+                DrawRectangleRec(scrollbarRect, Fade(sbColor, 0.85f));
+
+                Vector2 mouse = GetMousePosition();
+
+                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                    if (CheckCollisionPointRec(mouse, scrollbarRect)) {
+                        isDraggingScrollbar = true;
+                    }
+                }
+
+                if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+                    isDraggingScrollbar = false;
+                }
+
+                if (isDraggingScrollbar) {
+                    float mouseRelative = mouse.y - 100;
+                    scrollOffset = (mouseRelative / 680) * contentHeight;
+                }
+            }
 
             // TODO сделать группы - отложено до версии 2.0
         }
