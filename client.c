@@ -16,8 +16,6 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 
 #define CONFIG_FILE "conf.txt"
 #define MAX_NAME 23
@@ -151,7 +149,7 @@ void* recieveMessage(void* arg) {
             int bytes = read(sock, localBuf, sizeof(localBuf)-1);
             if (bytes <= 0) {
                 connected = false;
-                printf(cYELLOW "\nconnection closed" RESET);
+                printf("[RECEIVE MESSAGE] Connection closed\n");
                 return NULL;
             }
 
@@ -165,23 +163,23 @@ void* recieveMessage(void* arg) {
             }
         }
 
-        printf(cYELLOW "\n[RAW] got %d bytes from server" RESET, totalReceived);
+        printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
 
         if (strncmp(localBuf, "save-profile/", 13) == 0) {
-            printf("\n" cGREEN "profile successfully saved on server" RESET);
+            printf("[SAVE PROFILE] Profile successfully saved on server\n");
         }
         else if (strncmp(localBuf, "createId/user/", 14) == 0) {
             long newId = atol(localBuf + 14);
             if (newId > 0) {
                 config.userId = newId;
-                printf("\n" cGREEN "got new id for user: %ld" RESET, newId);
+                printf("[CREATE USER ID] Got new id from server: %ld\n", newId);
             }
         }
         else if (strncmp(localBuf, "createId/message/", 17) == 0) {
             long newId = atol(localBuf + 17);
             if (newId > 0) {
                 randomId = newId;
-                printf("\n" cGREEN "got new id for message: %ld" RESET, newId);
+                printf("[CREATE MESSAGE ID] Got new id from server: %ld\n", newId);
             }
         }
         else if (strncmp(localBuf, "getFriendsList/", 15) == 0) {
@@ -223,12 +221,12 @@ void* recieveMessage(void* arg) {
 
                 token = strtok(nullptr, "\x1E");
             }
-            printf("\n" cGREEN "received friends list (%d friends)" RESET, count);
+            printf("[GET FRIENDS LIST] Received friends list (%d friends)\n", count);
         }
         else if (strncmp(localBuf, "getChatHistory/", 15) == 0) {
             char *dataStart = strchr(localBuf + 15, '\x1E');
             if (!dataStart) {
-                printf(cYELLOW "\ngetChatHistory: история пуста" RESET);
+                printf("[GET CHAT HISTORY] History is empty\n");
                 messagesCount = 0;
                 currentFriendId = strtol(localBuf + 15, nullptr, 10);
                 return NULL;
@@ -302,14 +300,12 @@ void* recieveMessage(void* arg) {
             free(dataCopy);
             currentFriendId = friendId;
 
-            printf(cGREEN "\nзагружено %d сообщений с %ld" RESET, loaded, friendId);
+            printf("[GET CHAT HISTORY] Loaded %d messages with %ld\n", loaded, friendId);
         }
         else if (strncmp(localBuf, "err", 3) == 0) {
-            printf("\n" cRED "Server returned error" RESET);
+            printf("[ERROR] Server returned error for past action\n");
         }
         else if (strncmp(localBuf, "newMessage\x1E", 11) == 0) {
-            printf(cGREEN "[NEW MESSAGE] Получено push-сообщение\n" RESET);
-
             char *parts[4] = {0};
             int cnt = 0;
             char *token = strtok(localBuf + 11, "\x1F");
@@ -344,12 +340,10 @@ void* recieveMessage(void* arg) {
                     }
                 }
 
-                printf(cGREEN "\nсообщение от %ld: %s" RESET, senderId, text);
+                printf("[GET MESSAGE] Got new push-message from %ld: %s\n", senderId, text);
             }
         }
         else if (strncmp(localBuf, "newFriendRequest\x1E", 18) == 0) {
-            printf(cMAGENTA "\nновый запрос в друзья" RESET);
-
             char *parts[5] = {0};
             int cnt = 0;
             char *token = strtok(localBuf + 18, "\x1F");
@@ -363,14 +357,13 @@ void* recieveMessage(void* arg) {
                 long senderId  = strtol(parts[1], nullptr, 10);
                 const char *username = parts[2];
 
-                printf(cMAGENTA "\nот %s (id %ld) пришла заявка в друзья" RESET, username, senderId);
+                printf("[NEW FRIEND REQUEST] Got friend request from %ld\n", senderId);
 
                 // Можно добавить в отдельный массив или просто вывести уведомление
                 // Позже можно сделать попап с кнопками "Принять / Отклонить"
             }
         }
         else if (strncmp(localBuf, "updateClient/messages", 21) == 0) {
-            printf(cGREEN "\n[UPDATE] новые сообщения" RESET);
             char *ptr = localBuf + 21;
 
             int totalNew = (int)strtol(ptr, &ptr, 10);
@@ -407,14 +400,14 @@ void* recieveMessage(void* arg) {
                 token = strtok(nullptr, "\x1E");
             }
 
-            printf(cGREEN "\nобновление счётчика сообщений, всего новых: %d" RESET, totalNew);
+            printf("[UPDATE CLIENT] Got %d new messages\n", totalNew);
         }
         else if (strncmp(localBuf, "updateClient/friendRequests", 27) == 0) {
-            printf(cGREEN "\nобновляем реквесты в друзья" RESET);
+            printf("[UPDATE CLIENT] Refreshing friend requests\n");
             // TODO??
         }
         if (strncmp(fullMessage, "getAvatarResponse/", 18) == 0) {
-            printf(cGREEN "\n[AVATAR] received (%d bytes)" RESET, totalReceived);
+            printf("[GET AVATAR] Received (%d bytes)\n", totalReceived);
 
             char *ptr = fullMessage + 18;
             long userId = strtol(ptr, &ptr, 10);
@@ -443,16 +436,16 @@ void* recieveMessage(void* arg) {
 
                         if (decoded_len > 8) {
                             if (png_data[0] == 0x89 && png_data[1] == 'P' && png_data[2] == 'N' && png_data[3] == 'G') {
-                                printf(cGREEN "PNG сигнатура корректная\n" RESET);
+                                printf("[GET AVATAR] PNG signature good, saved %ld's avatar successfully\n", userId);
                             } else {
-                                printf(cRED "неверная PNG сигнатура (первые 4 байта: %02X %02X %02X %02X)\n" RESET,
-                                       png_data[0], png_data[1], png_data[2], png_data[3]);
+                                printf("[GET AVATAR] Bad PNG signature (first 4 bytes: %02X %02X %02X %02X), failed to save %ld's avatar\n",
+                                       png_data[0], png_data[1], png_data[2], png_data[3], userId);
                             }
                         }
                     }
                     free(png_data);
                 } else {
-                    printf(cRED "ошибка декодирования аватарки или пустые данные\n" RESET);
+                    printf("[GET AVATAR] Error decoding avatar data (possibly user has no avatar)\n");
                 }
             }
             requestedAvatarUpdate=true;
@@ -472,13 +465,13 @@ bool initNetwork(void) {
     inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr);
     // Connect to server
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        printf("\n" cRED "failed to connect to server" RESET "\n\n");
+        printf("[FATAL | NETWORK] Failed to connect to server\n");
         return false;
     }
     connected=true;
     // Create a listener
     if (pthread_create(&thread_id, nullptr, recieveMessage, NULL) != 0) {
-        perror("\n" cRED "failed to create listener thread" RESET "\n\n");
+        printf("[FATAL | NETWORK] Failed to create listener thread\n");
     }
     return true;
 }
@@ -487,10 +480,10 @@ void sendMessage(const char *message) {
         if (!initNetwork()) return;
     }
     if (send(sock, message, strlen(message), 0) < 0) {
-        printf("\n" cRED "error sending message: %s" RESET "\n", message);
+        printf("[NETWORK] Error sending message: %s\n", message);
         connected = false;
     } else {
-        printf("\n" cGREEN "sent successfully: %s" RESET "\n", message);
+        printf("[NETWORK] Sent successfully: %s\n", message);
         finishedResponse=false;
     }
 }
@@ -504,7 +497,7 @@ void sendMessage(const char *message) {
 bool loadConfig(Config *cfg) {
     FILE *f = fopen(CONFIG_FILE, "r");
     if (!f) {
-        TraceLog(LOG_WARNING, "\n\n" cYELLOW "conf.txt не найден или поврежден. conft.txt будет пересоздан." RESET "\n\n");
+        printf("[LOAD CONFIG FILE] conf.txt not found or corrupted. conf.txt will be recreated.\n");
         return false;
     }
     memset(cfg, 0, sizeof(Config));
@@ -529,7 +522,7 @@ bool loadConfig(Config *cfg) {
             errno = 0;
             cfg->userId=strtol(value, &endptr, 10);
             if (errno !=0 || endptr == value) {
-                TraceLog(LOG_WARNING, "\n\n" cRED "некорректный userId: %s" RESET "\n\n", value);
+                printf("[LOAD CONFIG FILE] Bad userId: %s\n", value);
                 cfg->isFirstUsed=true;
                 return false;
             }
@@ -605,7 +598,7 @@ bool saveConfig(Config *cfg) {
              cfg->avatarUrl,
              cfg->profileDescription);
 
-    printf(cYELLOW "\nsave-profile: %s" RESET, message);
+    printf("[SAVE PROFILE] saving %s\n", message);
     sendMessage(message);
     return true;
 }
@@ -757,6 +750,7 @@ float clamp(float val, float min, float max) {
 }
 
 int main(void) {
+    printf("\n");
     InitWindow(1600, 900, "UnChat - BETA 1.0");
     int codepoints[1024] = {0};
     int count = 0;
@@ -800,14 +794,14 @@ int main(void) {
     if (strlen(config.avatarUrl) != 0) {
         ssize_t len = readlink("/proc/self/exe", avatarPathInput, 255);
         if (len == -1) {
-            perror("readlink /proc/self/exe failed");
+            printf("[LOAD SELF AVATAR] Readlink /proc/self/exe failed\n");
             avatarPathInput[0] = '\0';
         } else {
             strncpy(avatarPathInput, config.avatarUrl, strlen(config.avatarUrl)+len);
             Image img = LoadImage(avatarPathInput);
             userAvatarTexture = LoadTextureFromImage(img);
             UnloadImage(img);
-            printf("\n\ncurrent path: %s\n\n", avatarPathInput);
+            printf("[LOAD SELF AVATAR] Current path: %s\n", avatarPathInput);
         }
     }
     static float scrollOffset = 0.0f;
@@ -856,7 +850,7 @@ int main(void) {
                     usleep(10000);
                 }
                 if (config.userId == 0) {
-                    printf(cRED "\nне получили ID от сервера, попробуй снова" RESET);
+                    printf("[CREATE USER ID] Timed out while waiting ID from server. retrying\n");
                     config.isFirstUsed = true;
                     continue;
                 }
@@ -889,12 +883,16 @@ int main(void) {
             }
             DrawTextEx(font, TextFormat("%s", config.userName), (Vector2){1320, 230}, 24, 1.0f, WHITE);
             //DrawRectangleLines(1320, 270, 260, 400, GRAY);
-            Rectangle textBounds = { 1326, 276, 248, 388 };
+            Rectangle textBounds = { 1326, 278, 248, 388 };
+            //DrawRectangleLines(1320, 270, 260, 400, GRAY);
             if (GuiTextBox((Rectangle){1320, 270, 260, 400}, newDesc, MAX_DESC, activeField==4)) {
                 activeField = (activeField == 4) ? -1 : 4;
             } else {
-                DrawTextBoxed(font, config.profileDescription, textBounds, 16, 1.0f, WHITE);
+                DrawTextBoxed(font, config.profileDescription, textBounds, 20, 1.0f, WHITE);
             }
+            //DrawLine(1320, 309, 1580, 309, (Color){ 40, 40, 40, 255 });
+            //DrawLine(1321, 310, 1579, 310, (Color){ 40, 40, 40, 255 });
+            //DrawLine(1320, 311, 1580, 311, (Color){ 40, 40, 40, 255 });
             if (GuiButton((Rectangle){1320, 680, 200, 50}, "Обновить")) {
                 if (newDesc[0] != 0) {
                     newDesc[1024]='\0';
@@ -935,7 +933,7 @@ int main(void) {
                         system("mkdir -p avatars");
 
                         if (ExportImage(img, savePath)) {
-                            printf(cGREEN "\navatar was cropped and saved: %s" RESET, savePath);
+                            printf("[SAVE SELF AVATAR] Avatar was cropped and saved: %s\n", savePath);
 
                             // updating config
                             snprintf(config.avatarUrl, MAX_AVATAR, "avatars/%ld.png", config.userId);
@@ -961,19 +959,19 @@ int main(void) {
 
                                 if (b64) {
                                     char response1[131072];
-                                    snprintf(response1, sizeof(response1), "saveAvatar/%s", b64);
+                                    snprintf(response1, sizeof(response1), "saveAvatar/%ld\x1E%s", config.userId, b64);
                                     sendMessage(response1);
                                     free(b64);
                                 }
                             }
                         } else {
-                            printf(cRED "\nfailed to save avatar" RESET);
+                            printf("[SAVE SELF AVATAR] Failed to save avatar\n");
                         }
 
                         UnloadImage(img);
                         memset(avatarPathInput, 0, sizeof(avatarPathInput));
                     } else {
-                        printf(cRED "\nfailed to load image: %s" RESET, avatarPathInput);
+                        printf("[SAVE SELF AVATAR] Failed to load image: %s\n", avatarPathInput);
                     }
                 }
             }
@@ -990,7 +988,7 @@ int main(void) {
                     if (FileExists(path)) {
                         Image img = LoadImage(path);
                         if (img.data == NULL) {
-                            printf("\ncouldnt load the image: %s", path);
+                            printf("[LOAD FRIEND AVATAR] Couldnt load %ld's avatar with %s path\n", friends[i].userId, path);
                         } else {
                             ImageResize(&img, 54, 54);
                             friendAvatarArr[i] = LoadTextureFromImage(img);
@@ -1000,7 +998,7 @@ int main(void) {
                         char req[64];
                         snprintf(req, sizeof(req), "getAvatar/%ld", friends[i].userId);
                         sendMessage(req);
-                        printf(cYELLOW "[AVATAR] Запрошена аватарка %ld с сервера\n" RESET, friends[i].userId);
+                        printf("[AVATAR] Requested avatar for %ld\n", friends[i].userId);
                     }
                 }
                 requestedAvatarUpdate=false;
@@ -1049,14 +1047,14 @@ int main(void) {
 
                     long targetId = strtol(userId, nullptr, 10);
                     if (targetId <= 0) {
-                        printf(cRED "\nнекорректный ID" RESET);
+                        printf("[SEND FRIEND REQUEST] Bad ID\n");
                         continue;
                     }
 
                     char parsed[64] = {0};
                     snprintf(parsed, sizeof(parsed), "addFriend/%ld\x1E%ld", config.userId, targetId);
 
-                    printf(cYELLOW "\nотправлен запрос в друзья: %s" RESET, parsed);
+                    printf("[SEND FRIEND REQUEST] Sent request for %ld: %s\n", targetId, parsed);
                     sendMessage(parsed);
 
                     isAddingFriend = false;
@@ -1068,7 +1066,7 @@ int main(void) {
                         char cmd[100];
                         snprintf(cmd, sizeof(cmd), "acceptFriend/%ld\x1E%ld", config.userId, targetId);
                         sendMessage(cmd);
-                        printf(cGREEN "\nпопытка принять заявку от %ld" RESET, targetId);
+                        printf("[ACCEPT FRIEND] Accepted friend request from %ld\n", targetId);
 
                         char req[64];
                         snprintf(req, sizeof(req), "getFriendsList/%ld", config.userId);
@@ -1100,7 +1098,6 @@ int main(void) {
                 // friend avatar
                 Rectangle avatarRect2 = { 20, friendStartY + 8, 54, 54 };
                 DrawTexturePro(friendAvatarArr[i], (Rectangle){0, 0, 54, 54}, avatarRect2, (Vector2){0, 0}, 0.0f, WHITE);
-                //DrawRectangleRec(avatarRect2, DARKGRAY);
                 DrawRectangleLinesEx(avatarRect2, 2, LIGHTGRAY);
 
                 // name + description
@@ -1179,7 +1176,7 @@ int main(void) {
                     (float)bubbleHeight
                 };
 
-                if (bubble.y + (float)bubbleHeight > 120 && bubble.y < 780) {
+                if (bubble.y + (float)bubbleHeight > 140 && bubble.y + (float)bubbleHeight < 820) {
                     Color bubbleColor = isMine ? (Color){0, 120, 215, 255} : (Color){60, 60, 70, 255};
 
                     DrawRectangleRec(bubble, bubbleColor);

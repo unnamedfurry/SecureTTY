@@ -104,7 +104,7 @@ void registerClient(long userId, int sock) {
     session->next = activeClients;
     activeClients = session;
 
-    printf(GREEN "\n[PUSH] client connected: userId=%ld, sock=%d" RESET, userId, sock);
+    printf("[PUSH] client connected: userId=%ld, sock=%d\n", userId, sock);
     pthread_mutex_unlock(&clientsMutex);
 }
 
@@ -115,7 +115,7 @@ void unregisterClient(int sock) {
 
     while (curr) {
         if (curr->sock == sock) {
-            printf(YELLOW "\n[PUSH] client disconnected: userId=%ld" RESET, curr->userId);
+            printf("[PUSH] client disconnected: userId=%ld\n", curr->userId);
             if (prev) prev->next = curr->next;
             else activeClients = curr->next;
             free(curr);
@@ -149,7 +149,7 @@ void getClientUpdates(long userId) {
     { // MESSAGES
         int size = sizeof(char)*1050;
         char *serverResponse = malloc(size);
-        if (serverResponse == NULL) { printf(RED "\nNot enough memory for updateClient answer." RESET); return; }
+        if (serverResponse == NULL) { printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n"); return; }
         int offset = 0;
         offset += snprintf(serverResponse+offset, sizeof(serverResponse) - offset, "updateClient/messages\x1E");
 
@@ -193,7 +193,7 @@ void getClientUpdates(long userId) {
     { // FRIEND REQUESTS
         int size = sizeof(char)*1024;
         char *serverResponse = malloc(size);
-        if (serverResponse == NULL) { printf(RED "\nNot enough memory for updateClient answer." RESET); return; }
+        if (serverResponse == NULL) { printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n"); return; }
         int offset = 0;
         offset += snprintf(serverResponse+offset, sizeof(serverResponse) - offset, "updateClient/friendRequests\x1E");
 
@@ -245,7 +245,7 @@ void getClientUpdates(long userId) {
 void getChatHistory(long userId, long friendId, int sock) {
     int bufSize = BUFFER_SIZE;
     char *response = malloc(bufSize);
-    if (!response) { printf(RED "\nnot enough memory for answer." RESET); return;}
+    if (!response) { printf("[FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n"); return;}
     int offset = snprintf(response, bufSize, "getChatHistory/%ld\x1E", friendId);
 
     char query[512];
@@ -277,7 +277,7 @@ void getChatHistory(long userId, long friendId, int sock) {
         if (offset+1024 > bufSize) {
             bufSize+=BUFFER_SIZE;
             char *newResponse = realloc(response, bufSize);
-            if (!newResponse) { printf(RED "\nnot enough memory for answer" RESET); free(response); break; }
+            if (!newResponse) { printf("[FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n"); free(response); break; }
             response = newResponse;
         }
         long msgId = strtol(row[0], nullptr, 10);
@@ -294,7 +294,7 @@ void getChatHistory(long userId, long friendId, int sock) {
     if (offset > 20) {
         response[++offset] = '\0';
         send(sock, response, strlen(response), 0);
-        printf(GREEN "\n[getChatHistory] sent %zu bytes for %ld <-> %ld" RESET, strlen(response), userId, friendId);
+        printf("[GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", strlen(response), userId, friendId);
     } else {
         response[++offset] = '\0';
         send(sock, "getChatHistory/empty", 21, 0);
@@ -337,16 +337,16 @@ bool saveUserToDB(long userId, const char *username, const char *email,
         esc_desc);
 
     if (written < 0 || written >= sizeof(query)) {
-        fprintf(stderr, RED "\nsaveUserToDB: query buffer too small! Needed %d bytes" RESET, written);
+        fprintf(stderr, "\n[SAVE USER TO DB] Query buffer too small, needed %d bytes", written);
         return false;
     }
 
     if (mysql_query(conn, query)) {
-        fprintf(stderr, RED "\nsaveUserToDB error: %s" RESET, mysql_error(conn));
+        fprintf(stderr, "\n[SAVE USER TO DB] Error: %s", mysql_error(conn));
         return false;
     }
 
-    printf(GREEN "\nUser %ld saved/updated successfully" RESET, userId);
+    printf("[SAVE USER TO DB] User %ld saved/updated successfully\n", userId);
     return true;
 }
 
@@ -366,7 +366,7 @@ bool saveMessageToDB(long messageId, long senderId, long receiverId, const char 
         escaped_message);
 
     if (mysql_query(conn, query)) {
-        fprintf(stderr, RED "\nsaveMessageToDB error: %s" RESET, mysql_error(conn));
+        fprintf(stderr, "\n[SAVE MESSAGE TO DB] Error: %s", mysql_error(conn));
         return false;
     }
     return true;
@@ -382,7 +382,7 @@ void getFriends(long user_id, int sock) {
              "SELECT relatedUserId FROM friends WHERE userId = %ld", user_id);
 
     if (mysql_query(conn, query)) {
-        printf(RED "\ngetFriends: failed to query friends for user %ld" RESET, user_id);
+        printf(RED "[GET FRIENDS LIST] Failed to query friends for user %ld\n", user_id);
         response[++offset] = '\0';
         send(sock, "getFriendsList/error", 21, 0);
         return;
@@ -429,7 +429,7 @@ void getFriends(long user_id, int sock) {
     if (offset > 15) {   // if there is atleast one friend
         response[++offset] = '\0';
         send(sock, response, strlen(response), 0);
-        printf(GREEN "\ngetFriends: sent %zu bytes for user %ld" RESET, strlen(response), user_id);
+        printf("[GET FRIENDS LIST] Sent %zu bytes for user %ld\n", strlen(response), user_id);
     } else {
         response[++offset] = '\0';
         send(sock, "getFriendsList/empty", 21, 0);
@@ -438,7 +438,7 @@ void getFriends(long user_id, int sock) {
 
 void getUsers(void) {
     if (mysql_query(conn, "SELECT userid, username FROM users")) {
-        fprintf(stderr, "\n" RED "SELECT err: %s" RESET, mysql_error(conn));
+        printf("[GET USER LIST] SELECT err: %s\n", mysql_error(conn));
     } else {
         MYSQL_RES *res = mysql_store_result(conn); // loading result ro memory
         if (res == NULL) return;
@@ -459,7 +459,7 @@ void getUsers(void) {
 
 bool sendFriendRequest(long senderId, long receiverId) {
     if (senderId == receiverId) {
-        printf(RED "\nнельзя добавить себя" RESET);
+        printf("[SEND FRIEND REQUEST] Can't add yourself\n");
         return false;
     }
 
@@ -471,7 +471,7 @@ bool sendFriendRequest(long senderId, long receiverId) {
         MYSQL_RES *res = mysql_store_result(conn);
         if (res && mysql_num_rows(res) == 0) {
             mysql_free_result(res);
-            printf(RED "\nполучатель %ld не существует в базе" RESET, receiverId);
+            printf("[SEND FRIEND REQUEST] %ld doesn't exist\n", receiverId);
             return false;
         }
         if (res) mysql_free_result(res);
@@ -484,11 +484,11 @@ bool sendFriendRequest(long senderId, long receiverId) {
         senderId, receiverId);
 
     if (mysql_query(conn, query)) {
-        fprintf(stderr, RED "\nsendFriendRequest FK error: %s" RESET, mysql_error(conn));
+        printf("[SEND FRIEND REQUEST] Query error: %s\n", mysql_error(conn));
         return false;
     }
 
-    printf(GREEN "\nзапрос в друзья сохранён %ld -> %ld" RESET, senderId, receiverId);
+    printf("[SEND FRIEND REQUEST] Friend request saved successfully in DB: %ld -> %ld\n", senderId, receiverId);
     return true;
 }
 
@@ -555,32 +555,58 @@ unsigned char* Base64Decode(const char* input, int* out_len) {
     return output;
 }
 
+bool finishedResponse = false;
 void* acceptMessage(void *arg) {
     int sock = *(int*)arg;
     free(arg);
-    char buffer[BUFFER_SIZE] = {0};
     char response[128] = {0};
+    char localBuf[BUFFER_SIZE];
+    char fullMessage[131072];
+    int totalReceived;
 
     while (1) {
-        memset(buffer, 0, BUFFER_SIZE);
-        int valread = (int)read(sock, buffer, BUFFER_SIZE - 1);
+        totalReceived = 0;
+        memset(fullMessage, 0, sizeof(fullMessage));
+        finishedResponse = false;
 
-        if (valread <= 0) {
-            printf("\n" YELLOW "client disconnected (sock %d)" RESET, sock);
-            break;
+        while (1) {
+            memset(localBuf, 0, sizeof(localBuf));
+            int bytes = read(sock, localBuf, sizeof(localBuf) - 1);
+            if (bytes < 0) {
+                printf("[ACCEPT MESSAGE] Read error\n");
+                goto client_disconnect;
+            }
+            if (bytes == 0) {                  // client gracefully closed connection
+                printf("[ACCEPT MESSAGE] Client disconnected (sock %d)\n", sock);
+                goto client_disconnect;
+            }
+
+            // protection from overflow
+            if (totalReceived + bytes > sizeof(fullMessage) - 1) {
+                printf("[ACCEPT MESSAGE] Warning: message too big, truncated!\n");
+                bytes = sizeof(fullMessage) - 1 - totalReceived;
+            }
+
+            memcpy(fullMessage + totalReceived, localBuf, bytes);
+            totalReceived += bytes;
+            fullMessage[totalReceived] = '\0';
+
+            if (bytes < sizeof(localBuf) - 1) {
+                break;
+            }
         }
 
-        buffer[valread] = '\0';
-        printf("\n\n" YELLOW "received from client: %s" RESET, buffer);
+        printf("[ACCEPT MESSAGE] Got %d bytes from client (sock %d)\n",
+               totalReceived, sock);
 
-        if (strcmp(buffer, "test/") == 0) {
+        if (strcmp(fullMessage, "test/") == 0) {
             strcpy(response, "ok");
         }
-        else if (strncmp(buffer, "receive-message/", 16) == 0) {
-            printf("\n" GREEN "saving message: %s" YELLOW, buffer);
+        else if (strncmp(fullMessage, "receive-message/", 16) == 0) {
+            printf("[RECEIVE MESSAGE] Saving message: %s\n", fullMessage);
             char *parts[4] = {0};
             int count = 0;
-            char *token = strtok(buffer + 16, "\x1E");
+            char *token = strtok(fullMessage + 16, "\x1E");
             while (token && count < 4) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -589,37 +615,36 @@ void* acceptMessage(void *arg) {
             long senderId = strtol(parts[1], nullptr, 10);
             long receiverId = strtol(parts[2], nullptr, 10);
             if (saveMessageToDB(messageId, senderId, receiverId, parts[3])) {
-                printf(GREEN "\nmessage saved: %ld -> %ld" RESET, senderId, receiverId);
+                printf("[RECEIVE MESSAGE] Message saved: %ld -> %ld\n", senderId, receiverId);
 
                 char pushPacket[BUFFER_SIZE];
                 snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s", messageId, senderId, parts[3], "now");
 
                 if (!pushToUser(receiverId, pushPacket)) {
-                    printf(YELLOW "\nreceiver %ld is offline, message saved to DB" RESET, receiverId);
+                    printf("[RECEIVE MESSAGE] Receiver %ld is offline, message will be saved to DB\n", receiverId);
                 }
             } else {
-                printf(RED "\nfailed to save message to db: %ld, %ld" RESET, senderId, messageId);
+                printf("[RECEIVE MESSAGE] Failed to save message to db: %ld, %ld\n", senderId, messageId);
                 strcpy(response, "err");
             }
         }
-        else if (strncmp(buffer, "createId/user", 13) == 0) {
+        else if (strncmp(fullMessage, "createId/user", 13) == 0) {
             srand(time(nullptr) + clock());
             long id = rand()%2147483647;
             sprintf(response, "createId/user/%ld", id);
-            printf("\n" GREEN "newId generated for user: %ld" RESET, id);
+            printf("[CREATE USER ID] New Id generated for user: %ld\n", id);
         }
-        else if (strncmp(buffer, "createId/message", 16) == 0) {
+        else if (strncmp(fullMessage, "createId/message", 16) == 0) {
             srand(time(nullptr) + clock());
             long id = rand()%2147483647;
             sprintf(response, "createId/message/%ld", id);
-            printf("\n" GREEN "newId generated for message: %ld" RESET, id);
+            printf("[CREATE MESSAGE ID] New Id generated for message: %ld\n", id);
         }
-        else if (strncmp(buffer, "save-profile/", 13) == 0) {
-            printf(GREEN "\nsave-profile received" RESET);
+        else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
 
             char *parts[6] = {0};
             int count = 0;
-            char *token = strtok(buffer + 13, "\x1E");
+            char *token = strtok(fullMessage + 13, "\x1E");
 
             while (token && count < 6) {
                 parts[count++] = token;
@@ -628,6 +653,7 @@ void* acceptMessage(void *arg) {
 
             if (count >= 6) {
                 long uid = strtol(parts[0], nullptr, 10);
+                printf("[SAVE PROFILE] received for %ld\n", uid);
                 bool success = saveUserToDB(uid,
                                             parts[1], parts[2], parts[3],
                                             parts[4], parts[5]);
@@ -641,21 +667,18 @@ void* acceptMessage(void *arg) {
                 send(sock, "save-profile/badformat", 22, 0);
             }
         }
-        else if (strncmp(buffer, "getFriendsList/", 15) == 0) {
-            long user_id = strtol(buffer + 15, nullptr, 10);
+        else if (strncmp(fullMessage, "getFriendsList/", 15) == 0) {
+            long user_id = strtol(fullMessage + 15, nullptr, 10);
+            printf("[GET FRIENDS LIST] received for %ld\n", user_id);
             if (user_id > 0) {
                 getFriends(user_id, sock);
-                // return NULL;
-                // continue;   maybe better???
             }
             continue;
         }
-        else if (strncmp(buffer, "addFriend/", 10) == 0) {
-            printf(GREEN "\naddFriend received: %s" RESET, buffer);
-
+        else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
             char *parts[2] = {0};
             int count = 0;
-            char *token = strtok(buffer + 10, "\x1E");
+            char *token = strtok(fullMessage + 10, "\x1E");
             while (token && count < 2) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -664,26 +687,25 @@ void* acceptMessage(void *arg) {
             if (count == 2) {
                 long senderId = strtol(parts[0], nullptr, 10);
                 long receiverId = strtol(parts[1], nullptr, 10);
-
-                printf("\nparsed: sender=%ld, receiver=%ld", senderId, receiverId);
+                printf("[ADD FRIEND] received for %ld -> %ld\n", senderId, receiverId);
 
                 if (senderId > 0 && receiverId > 0) {
                     if (sendFriendRequest(senderId, receiverId)) {
-                        printf(GREEN "\nзапрос в друзья отправлен %ld -> %ld" RESET, senderId, receiverId);
+                        printf("[ADD FRIEND] Sent successfully %ld -> %ld\n", senderId, receiverId);
                     } else {
-                        printf(RED "\nне удалось сохранить запрос" RESET);
+                        printf("[ADD FRIEND] Failed to save request\n");
                     }
                 } else {
-                    printf(RED "\naddFriend: некорректные ID" RESET);
+                    printf("[ADD FRIEND] Bad ID\n");
                 }
             } else {
-                printf(RED "\naddFriend: плохой формат, получено %d частей" RESET, count);
+                printf("[ADD FRIEND] Bad format, got %d/2 parts\n", count);
             }
         }
-        else if (strncmp(buffer, "acceptFriend/", 13) == 0) {
+        else if (strncmp(fullMessage, "acceptFriend/", 13) == 0) {
             char *parts[2] = {0};
             int count = 0;
-            char *token = strtok(buffer + 13, "\x1E");
+            char *token = strtok(fullMessage + 13, "\x1E");
             while (token && count < 2) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -694,26 +716,27 @@ void* acceptMessage(void *arg) {
                 long senderId   = strtol(parts[1], nullptr, 10);
 
                 if (acceptFriendRequest(receiverId, senderId)) {
-                    printf(GREEN "\n%ld принял заявку от %ld" RESET, receiverId, senderId);
+                    printf("[ACCEPT FRIEND] %ld accepted request from %ld\n", receiverId, senderId);
 
                     char friendsListCmd[64];
                     snprintf(friendsListCmd, sizeof(friendsListCmd), "getFriendsList/%ld", receiverId);
                 } else {
-                    printf(RED "\nне получилось принять в друзья: %ld -> %ld" RESET, senderId, receiverId);
+                    printf("[ACCEPT FRIEND] failed to add friend %ld -> %ld\n", senderId, receiverId);
                 }
             }
         }
-        else if (strncmp(buffer, "updateClient/", 13) == 0) {
-            long userId = strtol(buffer + 13, nullptr, 10);
+        else if (strncmp(fullMessage, "updateClient/", 13) == 0) {
+            long userId = strtol(fullMessage + 13, nullptr, 10);
+            printf("[UPDATE CLIENT] Received for client/user %ld\n", userId);
             if (userId > 0) {
                 registerClient(userId, sock);
                 getClientUpdates(userId);
             }
         }
-        else if (strncmp(buffer, "getChatHistory/", 15) == 0) {
+        else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
             char *parts[2] = {0};
             int count = 0;
-            char *token = strtok(buffer + 15, "\x1E");
+            char *token = strtok(fullMessage + 15, "\x1E");
             while (token && count < 2) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -722,6 +745,7 @@ void* acceptMessage(void *arg) {
             if (count == 2) {
                 long userId = strtol(parts[0], nullptr, 10);
                 long friendId = strtol(parts[1], nullptr, 10);
+                printf("[GET CHAT HISTORY] Received history request from %ld with %ld\n", userId, friendId);
 
                 if (userId > 0 && friendId > 0) {
                     getChatHistory(userId, friendId, sock);
@@ -729,10 +753,10 @@ void* acceptMessage(void *arg) {
             }
             continue;
         }
-        else if (strncmp(buffer, "getAvatar/", 10) == 0) {
-            long sender = strtol(buffer + 10, nullptr, 10);
-            long reciever = strtol(buffer + 20, nullptr, 10);
-            printf("[AVATAR] Запрос аватарки для user %ld\n", reciever);
+        else if (strncmp(fullMessage, "getAvatar/", 10) == 0) {
+            long sender = strtol(fullMessage + 10, nullptr, 10);
+            long reciever = strtol(fullMessage + 20, nullptr, 10);
+            printf("[GET AVATAR] %ld requested %ld's avatar\n", sender, reciever);
 
             char filepath[256];
             snprintf(filepath, sizeof(filepath), "avatars/%ld.png", reciever);
@@ -755,86 +779,103 @@ void* acceptMessage(void *arg) {
                     snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E%s", reciever, b64);
                     pushToUser(sender, response1);
                     free(b64);
-                    printf("[AVATAR] Отправлена аватарка %ld (%ld байт)\n", reciever, fileSize);
+                    printf("[GET AVATAR] sent %ld's avatar for %ld (%ld bytes)\n", reciever, sender, fileSize);
                 }
             } else {
                 // if theres no avatar - sending null
                 char response1[64];
                 snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E", reciever);
                 pushToUser(sender, response1);
-                printf("[AVATAR] Аватарка %ld не найдена\n", reciever);
+                printf("[GET AVATAR] %ld's avatar not found\n", reciever);
             }
         }
-        else if (strncmp(buffer, "saveAvatar/", 11) == 0) {
-            // TODO fix the splitting
-            char *ptr = buffer + 18;
+        else if (strncmp(fullMessage, "saveAvatar/", 11) == 0) {
+            char *ptr = fullMessage + 11;
             long userId = strtol(ptr, &ptr, 10);
 
-            if (*ptr == '\x1E') {
-                char *b64_data = ptr + 1;
-
-                int decoded_len = 0;
-                unsigned char* png_data = Base64Decode(b64_data, &decoded_len);
-
-                if (png_data && decoded_len > 1000) {   // minimum
-                    char path[PATH_MAX];
-                    ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
-                    if (len != -1) {
-                        path[len] = '\0';
-                        char *dir = dirname(path); // get the folder containing the binary
-                        snprintf(path, sizeof(path), "%s/avatars", dir); // safely join path and folder
-                        mkdir(path, 0777); // create it; if it exists, it just returns -1 (no harm done)
-                    }
-
-                    char filepath[128];
-                    snprintf(filepath, sizeof(filepath), "avatars/%ld.png", userId);
-
-                    FILE *f = fopen(filepath, "wb");
-                    if (f) {
-                        fwrite(png_data, 1, decoded_len, f);
-                        fclose(f);
-                    }
-                    FILE *f2 = fopen(filepath, "wb");
-                    if (f2) {
-                        fwrite(png_data, 1, decoded_len, f2);
-                        fclose(f2);
-
-                        if (decoded_len > 8) {
-                            if (png_data[0] == 0x89 && png_data[1] == 'P' && png_data[2] == 'N' && png_data[3] == 'G') {
-                                printf(GREEN "PNG сигнатура корректная\n" RESET);
-                            } else {
-                                printf(RED "неверная PNG сигнатура (первые 4 байта: %02X %02X %02X %02X)\n" RESET,
-                                       png_data[0], png_data[1], png_data[2], png_data[3]);
-                            }
-                        }
-                    }
-                    free(png_data);
-                } else {
-                    printf(RED "ошибка декодирования аватарки или пустые данные\n" RESET);
-                }
+            if (userId <= 0 || *ptr != '\x1E') {
+                printf("[SAVE AVATAR] Parse error: invalid userId or missing separator\n");
+                printf("[SAVE AVATAR] Received: %.100s...\n", fullMessage);
+                break;
             }
+
+            char *b64_data = ptr + 1; // base64 start
+            if (strlen(b64_data) < 100) {
+                printf("[SAVE AVATAR] Base64 data too short (%zu chars)\n", strlen(b64_data));
+                break;
+            }
+
+            int decoded_len = 0;
+            unsigned char* png_data = Base64Decode(b64_data, &decoded_len);
+
+            if (!png_data || decoded_len < 500) { // minimal PNG size
+                printf("[SAVE AVATAR] Decode failed or image too small (%d bytes)\n", decoded_len);
+                free(png_data);
+                break;
+            }
+
+            char binary_path[PATH_MAX] = {0};
+            char avatars_dir[PATH_MAX] = {0};
+            ssize_t len = readlink("/proc/self/exe", binary_path, sizeof(binary_path)-1);
+            if (len > 0) {
+                binary_path[len] = '\0';
+                snprintf(avatars_dir, sizeof(avatars_dir), "%s/avatars", dirname(binary_path));
+            } else {
+                strcpy(avatars_dir, "avatars");
+            }
+
+            mkdir(avatars_dir, 0755);
+            char filepath[PATH_MAX];
+            snprintf(filepath, sizeof(filepath), "%s/%ld.png", avatars_dir, userId);
+
+            FILE *f = fopen(filepath, "wb");
+            if (f) {
+                size_t written = fwrite(png_data, 1, decoded_len, f);
+                fclose(f);
+
+                if (written == (size_t)decoded_len) {
+                    if (decoded_len > 8 &&
+                        png_data[0] == 0x89 && png_data[1] == 'P' &&
+                        png_data[2] == 'N' && png_data[3] == 'G') {
+
+                        printf("[SAVE AVATAR] Good PNG signature, saved %ld's avatar successfully (%d bytes)\n", userId, decoded_len);
+                    } else {
+                        printf("[SAVE AVATAR] Bad PNG signature, saved possibly corrupted %ld's avatar\n" RESET, userId);
+                    }
+                } else {
+                    printf("[SAVE AVATAR] Write error: only %zu of %d bytes written\n", written, decoded_len);
+                }
+            } else {
+                perror("[SAVE AVATAR] fopen failed");
+            }
+
+            free(png_data);
         }
 
-        send(sock, response, strlen(response), 0);
-        printf("\n" YELLOW "sent response for request: %s -> %s" RESET, buffer, response);
+        if (strlen(response) > 0) {
+            send(sock, response, strlen(response), 0);
+            printf("[ACCEPT MESSAGE] Sent response for request: %s -> %s\n", fullMessage, response);
+        }
     }
 
+    client_disconnect:
     close(sock);
     return NULL;
 }
 
 int main(void) {
+    printf("\n");
     // if we don't connect to database, chat probably won't work
-    printf("\n" YELLOW "connecting ro mysql" RESET);
+    printf("[MYSQL] Connecting ro mysql\n");
     conn = mysql_init(nullptr);
 
     if (mysql_real_connect(conn, "localhost", "root", "681137", "unchat", 0, nullptr, 0) == NULL) {
-        fprintf(stderr, "\n" RED "failed to connect to database: %s" RESET, mysql_error(conn));
+        printf("[MYSQL] Failed to connect to database: %s\n", mysql_error(conn));
         mysql_close(conn);
         return 0;
     }
 
-    printf("\n" YELLOW "connected to database successfully" RESET);
+    printf("[MYSQL] Connected to database successfully\n");
 
     // we also need to initialize tables
     const char *queries[] = {
@@ -875,9 +916,9 @@ int main(void) {
 
     for (int i = 0; i < 3; i++) {
         if (mysql_query(conn, queries[i])) {
-            fprintf(stderr, RED "\nОшибка создания таблицы %d: %s" RESET, i, mysql_error(conn));
+            printf("[MYSQL] Error creating table %d: %s\n", i, mysql_error(conn));
         } else {
-            printf(GREEN "\nТаблица %d создана успешно!" RESET, i);
+            printf("[MYSQL] Table %d created successfully\n", i);
         }
     }
 
@@ -885,9 +926,9 @@ int main(void) {
 
     for (int i = 0; i < num_queries; i++) {
         if (mysql_query(conn, queries[i])) {
-            fprintf(stderr, "\n" RED "error creating table %d: %s" RESET, i, mysql_error(conn));
+            printf("[MYSQL] Error creating table %d: %s\n", i, mysql_error(conn));
         } else {
-            printf("\n" GREEN "table %d created successfully!" RESET, i);
+            printf("[MYSQL] Table %d created successfully\n", i);
         }
     }
 
@@ -905,7 +946,7 @@ int main(void) {
 
     // Start listening
     listen(server_fd, 10);
-    printf("\n" YELLOW "server is listening on port %d" YELLOW, port);
+    printf("[NETWORK] Server is listening on port %d\n", port);
 
     while (1) {
         new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
