@@ -10,6 +10,9 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <libgen.h>
 
 #define RESET   "\033[0m"
 #define RED     "\033[31m"
@@ -529,6 +532,28 @@ char* Base64Encode(const unsigned char* input, int length) {
     BIO_free_all(bio);
     return output;
 }
+unsigned char* Base64Decode(const char* input, int* out_len) {
+    BIO *bio, *b64;
+    int input_len = strlen(input);
+
+    unsigned char* output = (unsigned char*)malloc(input_len * 3 / 4 + 1);
+    if (!output) return nullptr;
+
+    b64 = BIO_new(BIO_f_base64());
+    bio = BIO_new_mem_buf(input, input_len);
+    bio = BIO_push(b64, bio);
+
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
+    *out_len = BIO_read(bio, output, input_len);
+
+    BIO_free_all(bio);
+
+    if (*out_len <= 0) {
+        free(output);
+        return nullptr;
+    }
+    return output;
+}
 
 void* acceptMessage(void *arg) {
     int sock = *(int*)arg;
@@ -738,6 +763,55 @@ void* acceptMessage(void *arg) {
                 snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E", reciever);
                 pushToUser(sender, response1);
                 printf("[AVATAR] Аватарка %ld не найдена\n", reciever);
+            }
+        }
+        else if (strncmp(buffer, "saveAvatar/", 11) == 0) {
+            // TODO fix the splitting
+            char *ptr = buffer + 18;
+            long userId = strtol(ptr, &ptr, 10);
+
+            if (*ptr == '\x1E') {
+                char *b64_data = ptr + 1;
+
+                int decoded_len = 0;
+                unsigned char* png_data = Base64Decode(b64_data, &decoded_len);
+
+                if (png_data && decoded_len > 1000) {   // minimum
+                    char path[PATH_MAX];
+                    ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+                    if (len != -1) {
+                        path[len] = '\0';
+                        char *dir = dirname(path); // get the folder containing the binary
+                        snprintf(path, sizeof(path), "%s/avatars", dir); // safely join path and folder
+                        mkdir(path, 0777); // create it; if it exists, it just returns -1 (no harm done)
+                    }
+
+                    char filepath[128];
+                    snprintf(filepath, sizeof(filepath), "avatars/%ld.png", userId);
+
+                    FILE *f = fopen(filepath, "wb");
+                    if (f) {
+                        fwrite(png_data, 1, decoded_len, f);
+                        fclose(f);
+                    }
+                    FILE *f2 = fopen(filepath, "wb");
+                    if (f2) {
+                        fwrite(png_data, 1, decoded_len, f2);
+                        fclose(f2);
+
+                        if (decoded_len > 8) {
+                            if (png_data[0] == 0x89 && png_data[1] == 'P' && png_data[2] == 'N' && png_data[3] == 'G') {
+                                printf(GREEN "PNG сигнатура корректная\n" RESET);
+                            } else {
+                                printf(RED "неверная PNG сигнатура (первые 4 байта: %02X %02X %02X %02X)\n" RESET,
+                                       png_data[0], png_data[1], png_data[2], png_data[3]);
+                            }
+                        }
+                    }
+                    free(png_data);
+                } else {
+                    printf(RED "ошибка декодирования аватарки или пустые данные\n" RESET);
+                }
             }
         }
 

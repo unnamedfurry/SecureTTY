@@ -73,8 +73,31 @@ bool finishedResponse = false;
 long currentFriendId = 0L;
 int messagesCount = 0;
 static Texture2D friendAvatarArr[100] = {0};
+bool requestedAvatarUpdate=false;
 
 // Base64 decode through OpenSSL
+char* Base64Encode(const unsigned char* input, int length) {
+    BIO *bio, *b64;
+    BUF_MEM *bufferPtr;
+
+    b64 = BIO_new(BIO_f_base64());
+    bio = BIO_new(BIO_s_mem());
+    bio = BIO_push(b64, bio);
+
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
+    BIO_write(bio, input, length);
+    BIO_flush(bio);
+
+    BIO_get_mem_ptr(bio, &bufferPtr);
+    BIO_set_close(bio, BIO_NOCLOSE);
+
+    char* output = (char*)malloc(bufferPtr->length + 1);
+    memcpy(output, bufferPtr->data, bufferPtr->length);
+    output[bufferPtr->length] = '\0';
+
+    BIO_free_all(bio);
+    return output;
+}
 unsigned char* Base64Decode(const char* input, int* out_len) {
     BIO *bio, *b64;
     int input_len = strlen(input);
@@ -412,75 +435,27 @@ void* recieveMessage(void* arg) {
                     if (f) {
                         fwrite(png_data, 1, decoded_len, f);
                         fclose(f);
-                        printf(cGREEN "Аватарка %ld сохранена! Размер: %d байт\n" RESET, userId, decoded_len);
                     }
-                    /*FILE *f2 = fopen(filepath, "wb");
+                    FILE *f2 = fopen(filepath, "wb");
                     if (f2) {
                         fwrite(png_data, 1, decoded_len, f2);
                         fclose(f2);
 
-                        printf(cGREEN "Файл сохранён: %s (%d байт)\n" RESET, filepath, decoded_len);
-
-                        // Проверка сигнатуры PNG
                         if (decoded_len > 8) {
                             if (png_data[0] == 0x89 && png_data[1] == 'P' && png_data[2] == 'N' && png_data[3] == 'G') {
                                 printf(cGREEN "PNG сигнатура корректная\n" RESET);
                             } else {
-                                printf(cRED "!!! НЕВЕРНАЯ PNG СИГНАТУРА !!! Первые 4 байта: %02X %02X %02X %02X\n" RESET,
+                                printf(cRED "неверная PNG сигнатура (первые 4 байта: %02X %02X %02X %02X)\n" RESET,
                                        png_data[0], png_data[1], png_data[2], png_data[3]);
                             }
                         }
-                    }*/
+                    }
                     free(png_data);
                 } else {
-                    printf(cRED "Ошибка декодирования аватарки или пустые данные\n" RESET);
+                    printf(cRED "ошибка декодирования аватарки или пустые данные\n" RESET);
                 }
             }
-            for (int i = 0; i < 100 && friends[i].userId != 0; i++) {
-                if (friendAvatarArr[i].id != 0) {
-                    UnloadTexture(friendAvatarArr[i]);
-                    friendAvatarArr[i].id = 0;
-                }
-                char path[128];
-                snprintf(path, sizeof(path), "avatars/%ld.png", friends[i].userId);
-
-                if (FileExists(path)) {
-                    /*int width, height, channels;
-
-                    // loading through stb_image
-                    unsigned char* data = stbi_load(path, &width, &height, &channels, 4); // 4 = RGBA
-
-                    if (data == NULL) {
-                        printf(cRED "[AVATAR] stbi_load failed: %s\n" RESET, path);
-                        return NULL;
-                    }
-
-                    // creating image in raylib's style
-                    Image img = {
-                        .data = data,
-                        .width = width,
-                        .height = height,
-                        .mipmaps = 1,
-                        .format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
-                    };
-
-                    Texture2D texture = LoadTextureFromImage(img);
-
-                    stbi_image_free(data);
-
-                    if (texture.id != 0) {
-                        printf(cGREEN "[AVATAR] ✓ stbi + Raylib success: %s (%dx%d)\n" RESET, path, width, height);
-                    } else {
-                        printf(cRED "[AVATAR] ✗ LoadTextureFromImage failed даже после stb_image\n" RESET);
-                    }*/
-                    // TODO: find a way to properly load image (failed - raylib, stbi)
-                } else {
-                    char req[64];
-                    snprintf(req, sizeof(req), "getAvatar/%ld", friends[i].userId);
-                    sendMessage(req);
-                    printf(cYELLOW "[AVATAR] Запрошена аватарка %ld с сервера\n" RESET, friends[i].userId);
-                }
-            }
+            requestedAvatarUpdate=true;
         }
 
         finishedResponse = true;
@@ -781,7 +756,6 @@ float clamp(float val, float min, float max) {
     return val;
 }
 
-
 int main(void) {
     InitWindow(1600, 900, "UnChat - BETA 1.0");
     int codepoints[1024] = {0};
@@ -922,8 +896,10 @@ int main(void) {
                 DrawTextBoxed(font, config.profileDescription, textBounds, 16, 1.0f, WHITE);
             }
             if (GuiButton((Rectangle){1320, 680, 200, 50}, "Обновить")) {
-                newDesc[1024]='\0';
-                strcpy(config.profileDescription, newDesc);
+                if (newDesc[0] != 0) {
+                    newDesc[1024]='\0';
+                    strcpy(config.profileDescription, newDesc);
+                }
                 saveConfig(&config);
                 loadConfig(&config);
             }
@@ -969,6 +945,27 @@ int main(void) {
                             userAvatarTexture = LoadTextureFromImage(img);
 
                             saveConfig(&config);        // save and pull to server
+
+                            FILE *f = fopen(savePath, "rb");
+                            if (f) {
+                                fseek(f, 0, SEEK_END);
+                                long fileSize = ftell(f);
+                                fseek(f, 0, SEEK_SET);
+
+                                unsigned char *pngData = malloc(fileSize);
+                                fread(pngData, 1, fileSize, f);
+                                fclose(f);
+
+                                char *b64 = Base64Encode(pngData, fileSize);
+                                free(pngData);
+
+                                if (b64) {
+                                    char response1[131072];
+                                    snprintf(response1, sizeof(response1), "saveAvatar/%s", b64);
+                                    sendMessage(response1);
+                                    free(b64);
+                                }
+                            }
                         } else {
                             printf(cRED "\nfailed to save avatar" RESET);
                         }
@@ -979,6 +976,34 @@ int main(void) {
                         printf(cRED "\nfailed to load image: %s" RESET, avatarPathInput);
                     }
                 }
+            }
+
+            if (requestedAvatarUpdate==true) {
+                for (int i = 0; i < 100 && friends[i].userId != 0; i++) {
+                    if (friendAvatarArr[i].id != 0) {
+                        UnloadTexture(friendAvatarArr[i]);
+                        friendAvatarArr[i].id = 0;
+                    }
+                    char path[128];
+                    snprintf(path, sizeof(path), "avatars/%ld.png", friends[i].userId);
+
+                    if (FileExists(path)) {
+                        Image img = LoadImage(path);
+                        if (img.data == NULL) {
+                            printf("\ncouldnt load the image: %s", path);
+                        } else {
+                            ImageResize(&img, 54, 54);
+                            friendAvatarArr[i] = LoadTextureFromImage(img);
+                            UnloadImage(img);
+                        }
+                    } else {
+                        char req[64];
+                        snprintf(req, sizeof(req), "getAvatar/%ld", friends[i].userId);
+                        sendMessage(req);
+                        printf(cYELLOW "[AVATAR] Запрошена аватарка %ld с сервера\n" RESET, friends[i].userId);
+                    }
+                }
+                requestedAvatarUpdate=false;
             }
 
             if (GuiTextBox((Rectangle){300, 839, 861, 60}, message, MAX_MESS, activeField==5)) {
