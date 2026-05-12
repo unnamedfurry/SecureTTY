@@ -104,7 +104,7 @@ void registerClient(long userId, int sock) {
     session->next = activeClients;
     activeClients = session;
 
-    printf("[PUSH] client connected: userId=%ld, sock=%d\n", userId, sock);
+    printf(YELLOW "[NETWORK] client connected: userId=%ld, sock=%d\n" RESET, userId, sock);
     pthread_mutex_unlock(&clientsMutex);
 }
 
@@ -115,7 +115,7 @@ void unregisterClient(int sock) {
 
     while (curr) {
         if (curr->sock == sock) {
-            printf("[PUSH] client disconnected: userId=%ld\n", curr->userId);
+            printf(YELLOW "[NETWORK] client disconnected: userId=%ld\n" RESET, curr->userId);
             if (prev) prev->next = curr->next;
             else activeClients = curr->next;
             free(curr);
@@ -128,30 +128,36 @@ void unregisterClient(int sock) {
 }
 
 // sending messages to online client
-bool pushToUser(long userId, const char *data) {
-    pthread_mutex_lock(&clientsMutex);
-    ClientSession *curr = activeClients;
+ bool pushToUser(long userId, const char *data) {
+     pthread_mutex_lock(&clientsMutex);
+     ClientSession *curr = activeClients;
 
-    while (curr) {
-        if (curr->userId == userId) {
-            int sent = (int)send(curr->sock, data, strlen(data), MSG_NOSIGNAL);
-            pthread_mutex_unlock(&clientsMutex);
-            return sent > 0;
-        }
-        curr = curr->next;
-    }
+     while (curr) {
+         if (curr->userId == userId) {
+             int sent = (int)send(curr->sock, data, strlen(data), MSG_NOSIGNAL);
+             pthread_mutex_unlock(&clientsMutex);
+             return sent > 0;
+         }
+         curr = curr->next;
+     }
 
-    pthread_mutex_unlock(&clientsMutex);
-    return false; // client offline
+     pthread_mutex_unlock(&clientsMutex);
+     return false; // client offline
 }
 
-void getClientUpdates(long userId) {
+void getClientUpdates(long userId, int sock) {
     { // MESSAGES
         int size = sizeof(char)*1050;
-        char *serverResponse = malloc(size);
-        if (serverResponse == NULL) { printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n"); return; }
+        char *response = malloc(size);
+        if (response == NULL) {
+            printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n");
+            snprintf(response, 28, "updateClient/messages/error");
+            send(sock, response, 28, 0);
+            free(response);
+            return;
+        }
         int offset = 0;
-        offset += snprintf(serverResponse+offset, sizeof(serverResponse) - offset, "updateClient/messages\x1E");
+        offset += snprintf(response+offset, sizeof(response) - offset, "updateClient/messages\x1E");
 
         char query[512];
         snprintf(query, sizeof(query),
@@ -164,7 +170,7 @@ void getClientUpdates(long userId) {
             if (res) {
                 MYSQL_ROW row;
                 int totalNew = 0;
-                char message[1000] = {0};
+                char message[MAX_MESS+1] = {0};
                 int messageOffset = 0;
 
                 while ((row = mysql_fetch_row(res))) {
@@ -177,25 +183,31 @@ void getClientUpdates(long userId) {
                 }
                 mysql_free_result(res);
 
-                offset += snprintf(serverResponse+offset, sizeof(serverResponse)-offset,
+                offset += snprintf(response+offset, sizeof(response)-offset,
                                  "%d\x1E%s", totalNew, message);
             } else {
-                offset += snprintf(serverResponse+offset, sizeof(serverResponse)-offset, "0\x1E");
+                offset += snprintf(response+offset, sizeof(response)-offset, "0\x1E");
             }
         } else {
-            offset += snprintf(serverResponse+offset, sizeof(serverResponse)-offset, "0\x1E");
+            offset += snprintf(response+offset, sizeof(response)-offset, "0\x1E");
         }
-        serverResponse[++offset] = '\0';
-        pushToUser(userId, serverResponse);
-        free(serverResponse);
+        response[++offset] = '\0';
+        send(sock, response, sizeof(response), 0);
+        free(response);
     }
 
     { // FRIEND REQUESTS
         int size = sizeof(char)*1024;
-        char *serverResponse = malloc(size);
-        if (serverResponse == NULL) { printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n"); return; }
+        char *response = malloc(size);
+        if (response == NULL) {
+            printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n");
+            snprintf(response, 34, "updateClient/friendRequests/error");
+            send(sock, response, 34, 0);
+            free(response);
+            return;
+        }
         int offset = 0;
-        offset += snprintf(serverResponse+offset, sizeof(serverResponse) - offset, "updateClient/friendRequests\x1E");
+        offset += snprintf(response+offset, sizeof(response) - offset, "updateClient/friendRequests\x1E");
 
         char query[512];
         snprintf(query, sizeof(query),
@@ -220,32 +232,38 @@ void getClientUpdates(long userId) {
                 }
                 mysql_free_result(res);
 
-                int tempOffset = snprintf(serverResponse+offset, sizeof(serverResponse)-offset, "%s", message);
+                int tempOffset = snprintf(response+offset, sizeof(response)-offset, "%s", message);
                 if (tempOffset+offset > size) {
                     size+=2560;
-                    char *newServerResponce = realloc(serverResponse, size);
+                    char *newServerResponce = realloc(response, size);
                     if (newServerResponce) {
-                        serverResponse=newServerResponce;
-                        snprintf(serverResponse+offset, sizeof(serverResponse)-offset, "%s", message);
+                        response=newServerResponce;
+                        snprintf(response+offset, sizeof(response)-offset, "%s", message);
                     }
                 }
                 offset+=tempOffset;
             } else {
-                offset += snprintf(serverResponse+offset, sizeof(serverResponse)-offset, "0");
+                offset += snprintf(response+offset, sizeof(response)-offset, "0");
             }
         } else {
-            offset += snprintf(serverResponse+offset, sizeof(serverResponse)-offset, "0");
+            offset += snprintf(response+offset, sizeof(response)-offset, "0");
         }
-        serverResponse[++offset] = '\0';
-        pushToUser(userId, serverResponse);
-        free(serverResponse);
+        response[++offset] = '\0';
+        send(sock, response, sizeof(response), 0);
+        free(response);
     }
 }
 
 void getChatHistory(long userId, long friendId, int sock) {
     int bufSize = BUFFER_SIZE;
     char *response = malloc(bufSize);
-    if (!response) { printf("[FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n"); return;}
+    if (!response) {
+        printf("[FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n");
+        snprintf(response, 21, "getChatHistory/error");
+        send(sock, response, 21, 0);
+        free(response);
+        return;
+    }
     int offset = snprintf(response, bufSize, "getChatHistory/%ld\x1E", friendId);
 
     char query[512];
@@ -258,8 +276,8 @@ void getChatHistory(long userId, long friendId, int sock) {
         userId, friendId, friendId, userId);
 
     if (mysql_query(conn, query)) {
-        response[++offset] = '\0';
-        send(sock, "getChatHistory/error", 20, 0);
+        snprintf(response, 21, "getChatHistory/error");
+        send(sock, response, 21, 0);
         free(response);
         return;
     }
@@ -267,8 +285,8 @@ void getChatHistory(long userId, long friendId, int sock) {
     MYSQL_RES *res = mysql_store_result(conn);
     if (!res) {
         response[++offset] = '\0';
-        send(sock, "getChatHistory/empty", 21, 0);
-        free(response);
+        snprintf(response, 21, "getChatHistory/empty");
+        send(sock, response, 21, 0);
         return;
     }
 
@@ -277,7 +295,7 @@ void getChatHistory(long userId, long friendId, int sock) {
         if (offset+1024 > bufSize) {
             bufSize+=BUFFER_SIZE;
             char *newResponse = realloc(response, bufSize);
-            if (!newResponse) { printf("[FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n"); free(response); break; }
+            if (!newResponse) { printf("[FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n"); free(response); continue; }
             response = newResponse;
         }
         long msgId = strtol(row[0], nullptr, 10);
@@ -293,13 +311,12 @@ void getChatHistory(long userId, long friendId, int sock) {
 
     if (offset > 20) {
         response[++offset] = '\0';
-        send(sock, response, strlen(response), 0);
+        send(sock, response, sizeof(response), 0);
         printf("[GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", strlen(response), userId, friendId);
     } else {
-        response[++offset] = '\0';
-        send(sock, "getChatHistory/empty", 21, 0);
+        snprintf(response, 21, "getChatHistory/empty");
+        send(sock, response, 21, 0);
     }
-
     free(response);
 }
 
@@ -372,29 +389,32 @@ bool saveMessageToDB(long messageId, long senderId, long receiverId, const char 
     return true;
 }
 
-void getFriends(long user_id, int sock) {
+void getFriends(long userId, int sock) {
     char response[8192] = {0};
-    int offset = snprintf(response, sizeof(response), "getFriendsList/%ld\x1E", user_id);
+    int offset = snprintf(response, sizeof(response), "getFriendsList/%ld\x1E", userId);
 
     // getting relatedUserId
     char query[512];
     snprintf(query, sizeof(query),
-             "SELECT relatedUserId FROM friends WHERE userId = %ld", user_id);
+             "SELECT relatedUserId FROM friends WHERE userId = %ld", userId);
 
     if (mysql_query(conn, query)) {
-        printf(RED "[GET FRIENDS LIST] Failed to query friends for user %ld\n", user_id);
-        response[++offset] = '\0';
-        send(sock, "getFriendsList/error", 21, 0);
+        printf("[GET FRIENDS LIST] Failed to query friends for user %ld\n", userId);
+        memset(response, 0, sizeof(response));
+        strncpy(response, "getFriendList/error", 21);
+        send(sock, response, 21, 0);
         return;
     }
 
     MYSQL_RES *res = mysql_store_result(conn);
     if (res == NULL) {
-        response[++offset] = '\0';
-        send(sock, "getFriendsList/empty", 21, 0);
+        memset(response, 0, sizeof(response));
+        strncpy(response, "getFriendList/empty", 21);
+        send(sock, response, 21, 0);
         return;
     }
 
+    int friends = 0;
     MYSQL_ROW row;
     while ((row = mysql_fetch_row(res))) {
         if (row[0] == NULL) continue;
@@ -418,6 +438,7 @@ void getFriends(long user_id, int sock) {
                         friend_id,
                         frow[1] ? frow[1] : "",     // avatarUrl
                         frow[2] ? frow[2] : "");    // profileDesc
+                    friends++;
                 }
                 mysql_free_result(fres);
             }
@@ -428,34 +449,37 @@ void getFriends(long user_id, int sock) {
     // sending result
     if (offset > 15) {   // if there is atleast one friend
         response[++offset] = '\0';
-        send(sock, response, strlen(response), 0);
-        printf("[GET FRIENDS LIST] Sent %zu bytes for user %ld\n", strlen(response), user_id);
+        send(sock, response, sizeof(response), 0);
+        printf("[GET FRIENDS LIST] Sent %zu bytes for user %ld (%d friends)\n", strlen(response), userId, friends);
     } else {
-        response[++offset] = '\0';
-        send(sock, "getFriendsList/empty", 21, 0);
+        memset(response, 0, sizeof(response));
+        strncpy(response, "getFriendList/empty", 21);
+        send(sock, response, 21, 0);
     }
 }
 
-void getUsers(void) {
-    if (mysql_query(conn, "SELECT userid, username FROM users")) {
-        printf("[GET USER LIST] SELECT err: %s\n", mysql_error(conn));
-    } else {
-        MYSQL_RES *res = mysql_store_result(conn); // loading result ro memory
-        if (res == NULL) return;
-
-        MYSQL_ROW row; // line array (char *)
-        int num_fields = (int)mysql_num_fields(res); // number of columns
-
-        while ((row = mysql_fetch_row(res))) {
-            for(int i = 0; i < num_fields; i++) {
-                printf("%s ", row[i] ? row[i] : "NULL");
-            }
-            printf("\n");
-        }
-
-        mysql_free_result(res); // free memory
-    }
-}
+// bool getUsers(void) {
+//     if (mysql_query(conn, "SELECT userid, username FROM users")) {
+//         printf("[GET USER LIST] SELECT err: %s\n", mysql_error(conn));
+//         return false;
+//     } else {
+//         MYSQL_RES *res = mysql_store_result(conn); // loading result ro memory
+//         if (res == NULL) return false;
+//
+//         MYSQL_ROW row; // line array (char *)
+//         int num_fields = (int)mysql_num_fields(res); // number of columns
+//
+//         while ((row = mysql_fetch_row(res))) {
+//             for(int i = 0; i < num_fields; i++) {
+//                 printf("%s ", row[i] ? row[i] : "NULL");
+//             }
+//             printf("\n");
+//         }
+//
+//         mysql_free_result(res); // free memory
+//     }
+//     return true;
+// }
 
 bool sendFriendRequest(long senderId, long receiverId) {
     if (senderId == receiverId) {
@@ -569,15 +593,15 @@ void* acceptMessage(void *arg) {
         memset(fullMessage, 0, sizeof(fullMessage));
         finishedResponse = false;
 
-        while (1) {
+        while (1) { // building a single message of several parts (mostly for avatar uploads)
             memset(localBuf, 0, sizeof(localBuf));
             int bytes = read(sock, localBuf, sizeof(localBuf) - 1);
             if (bytes < 0) {
                 printf("[ACCEPT MESSAGE] Read error\n");
                 goto client_disconnect;
             }
-            if (bytes == 0) {                  // client gracefully closed connection
-                printf("[ACCEPT MESSAGE] Client disconnected (sock %d)\n", sock);
+            if (bytes == 0) {
+                printf("[NETWORK] Client disconnected (sock %d)\n", sock);
                 goto client_disconnect;
             }
 
@@ -672,8 +696,8 @@ void* acceptMessage(void *arg) {
             printf("[GET FRIENDS LIST] received for %ld\n", user_id);
             if (user_id > 0) {
                 getFriends(user_id, sock);
+                continue;
             }
-            continue;
         }
         else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
             char *parts[2] = {0};
@@ -694,12 +718,15 @@ void* acceptMessage(void *arg) {
                         printf("[ADD FRIEND] Sent successfully %ld -> %ld\n", senderId, receiverId);
                     } else {
                         printf("[ADD FRIEND] Failed to save request\n");
+                        strncpy(response, "addFriend/error", 15);
                     }
                 } else {
                     printf("[ADD FRIEND] Bad ID\n");
+                    strncpy(response, "addFriend/error", 15);
                 }
             } else {
                 printf("[ADD FRIEND] Bad format, got %d/2 parts\n", count);
+                strncpy(response, "addFriend/badformat", 19);
             }
         }
         else if (strncmp(fullMessage, "acceptFriend/", 13) == 0) {
@@ -722,6 +749,7 @@ void* acceptMessage(void *arg) {
                     snprintf(friendsListCmd, sizeof(friendsListCmd), "getFriendsList/%ld", receiverId);
                 } else {
                     printf("[ACCEPT FRIEND] failed to add friend %ld -> %ld\n", senderId, receiverId);
+                    strncpy(response, "acceptFriend/error", 18);
                 }
             }
         }
@@ -730,7 +758,8 @@ void* acceptMessage(void *arg) {
             printf("[UPDATE CLIENT] Received for client/user %ld\n", userId);
             if (userId > 0) {
                 registerClient(userId, sock);
-                getClientUpdates(userId);
+                getClientUpdates(userId, sock);
+                continue;
             }
         }
         else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
@@ -777,7 +806,7 @@ void* acceptMessage(void *arg) {
                 if (b64) {
                     char response1[131072];
                     snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E%s", reciever, b64);
-                    pushToUser(sender, response1);
+                    send(sock, response, sizeof(response), 0);
                     free(b64);
                     printf("[GET AVATAR] sent %ld's avatar for %ld (%ld bytes)\n", reciever, sender, fileSize);
                 }
@@ -785,7 +814,7 @@ void* acceptMessage(void *arg) {
                 // if theres no avatar - sending null
                 char response1[64];
                 snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E", reciever);
-                pushToUser(sender, response1);
+                send(sock, response, sizeof(response), 0);
                 printf("[GET AVATAR] %ld's avatar not found\n", reciever);
             }
         }
@@ -796,13 +825,13 @@ void* acceptMessage(void *arg) {
             if (userId <= 0 || *ptr != '\x1E') {
                 printf("[SAVE AVATAR] Parse error: invalid userId or missing separator\n");
                 printf("[SAVE AVATAR] Received: %.100s...\n", fullMessage);
-                break;
+                continue;
             }
 
             char *b64_data = ptr + 1; // base64 start
             if (strlen(b64_data) < 100) {
                 printf("[SAVE AVATAR] Base64 data too short (%zu chars)\n", strlen(b64_data));
-                break;
+                continue;
             }
 
             int decoded_len = 0;
@@ -811,7 +840,7 @@ void* acceptMessage(void *arg) {
             if (!png_data || decoded_len < 500) { // minimal PNG size
                 printf("[SAVE AVATAR] Decode failed or image too small (%d bytes)\n", decoded_len);
                 free(png_data);
-                break;
+                continue;
             }
 
             char binary_path[PATH_MAX] = {0};

@@ -132,7 +132,7 @@ static int sock = -1;
 static struct sockaddr_in serv_addr;
 bool connected = false;
 
-void sendMessage(const char *message);
+//void sendMessage(const char *message);
 void* recieveMessage(void* arg) {
     char localBuf[BUFFER_SIZE];
     char fullMessage[131072];  // large buffer
@@ -208,7 +208,8 @@ void* recieveMessage(void* arg) {
                 friend_.userId = (parts[1]) ? strtol(parts[1], nullptr, 10) : 0;
                 char req[32];
                 snprintf(req, 31, "getAvatar/%ld/%ld", config.userId, friend_.userId);
-                sendMessage(req);
+                //sendMessage(req);
+                send(sock, req, sizeof(req), 0);
 
                 if (parts[2]) strcpy(friend_.avatarUrl, parts[2]);
                 else friend_.avatarUrl[0] = '\0';
@@ -465,13 +466,13 @@ bool initNetwork(void) {
     inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr);
     // Connect to server
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        printf("[FATAL | NETWORK] Failed to connect to server\n");
+        printf(cRED "[FATAL | NETWORK] Failed to connect to server\n" RESET);
         return false;
     }
     connected=true;
     // Create a listener
     if (pthread_create(&thread_id, nullptr, recieveMessage, NULL) != 0) {
-        printf("[FATAL | NETWORK] Failed to create listener thread\n");
+        printf(cRED "[FATAL | NETWORK] Failed to create listener thread\n" RESET);
     }
     return true;
 }
@@ -769,6 +770,7 @@ int main(void) {
 
     bool initedNetwork = initNetwork();
     bool loadedConf = loadConfig(&config);
+    usleep(1000000);
     char msgBuf[BUFFER_SIZE];
     snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
     sendMessage(msgBuf);
