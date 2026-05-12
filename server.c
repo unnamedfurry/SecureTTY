@@ -620,17 +620,18 @@ void* acceptMessage(void *arg) {
             }
         }
 
-        printf("[ACCEPT MESSAGE] Got %d bytes from client (sock %d)\n",
-               totalReceived, sock);
+        printf("[ACCEPT MESSAGE] Got %d bytes from client (sock %d)\n", totalReceived, sock);
+        printf("[ACCEPT MESSAGE] Client said (single message): %s\n", localBuf);
+        printf("[ACCEPT MESSAGE] Client said (full message): %s\n", fullMessage);
 
-        if (strcmp(fullMessage, "test/") == 0) {
+        if (strcmp(localBuf, "test/") == 0) {
             strcpy(response, "ok");
         }
-        else if (strncmp(fullMessage, "receive-message/", 16) == 0) {
-            printf("[RECEIVE MESSAGE] Saving message: %s\n", fullMessage);
+        else if (strncmp(localBuf, "receive-message/", 16) == 0) {
+            printf("[RECEIVE MESSAGE] Saving message: %s\n", localBuf);
             char *parts[4] = {0};
             int count = 0;
-            char *token = strtok(fullMessage + 16, "\x1E");
+            char *token = strtok(localBuf + 16, "\x1E");
             while (token && count < 4) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -652,23 +653,23 @@ void* acceptMessage(void *arg) {
                 strcpy(response, "err");
             }
         }
-        else if (strncmp(fullMessage, "createId/user", 13) == 0) {
+        else if (strncmp(localBuf, "createId/user", 13) == 0) {
             srand(time(nullptr) + clock());
             long id = rand()%2147483647;
             sprintf(response, "createId/user/%ld", id);
             printf("[CREATE USER ID] New Id generated for user: %ld\n", id);
         }
-        else if (strncmp(fullMessage, "createId/message", 16) == 0) {
+        else if (strncmp(localBuf, "createId/message", 16) == 0) {
             srand(time(nullptr) + clock());
             long id = rand()%2147483647;
             sprintf(response, "createId/message/%ld", id);
             printf("[CREATE MESSAGE ID] New Id generated for message: %ld\n", id);
         }
-        else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
+        else if (strncmp(localBuf, "save-profile/", 13) == 0) {
 
             char *parts[6] = {0};
             int count = 0;
-            char *token = strtok(fullMessage + 13, "\x1E");
+            char *token = strtok(localBuf + 13, "\x1E");
 
             while (token && count < 6) {
                 parts[count++] = token;
@@ -691,18 +692,18 @@ void* acceptMessage(void *arg) {
                 send(sock, "save-profile/badformat", 22, 0);
             }
         }
-        else if (strncmp(fullMessage, "getFriendsList/", 15) == 0) {
-            long user_id = strtol(fullMessage + 15, nullptr, 10);
+        else if (strncmp(localBuf, "getFriendsList/", 15) == 0) {
+            long user_id = strtol(localBuf + 15, nullptr, 10);
             printf("[GET FRIENDS LIST] received for %ld\n", user_id);
             if (user_id > 0) {
                 getFriends(user_id, sock);
                 continue;
             }
         }
-        else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
+        else if (strncmp(localBuf, "addFriend/", 10) == 0) {
             char *parts[2] = {0};
             int count = 0;
-            char *token = strtok(fullMessage + 10, "\x1E");
+            char *token = strtok(localBuf + 10, "\x1E");
             while (token && count < 2) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -729,10 +730,10 @@ void* acceptMessage(void *arg) {
                 strncpy(response, "addFriend/badformat", 19);
             }
         }
-        else if (strncmp(fullMessage, "acceptFriend/", 13) == 0) {
+        else if (strncmp(localBuf, "acceptFriend/", 13) == 0) {
             char *parts[2] = {0};
             int count = 0;
-            char *token = strtok(fullMessage + 13, "\x1E");
+            char *token = strtok(localBuf + 13, "\x1E");
             while (token && count < 2) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -753,8 +754,8 @@ void* acceptMessage(void *arg) {
                 }
             }
         }
-        else if (strncmp(fullMessage, "updateClient/", 13) == 0) {
-            long userId = strtol(fullMessage + 13, nullptr, 10);
+        else if (strncmp(localBuf, "updateClient/", 13) == 0) {
+            long userId = strtol(localBuf + 13, nullptr, 10);
             printf("[UPDATE CLIENT] Received for client/user %ld\n", userId);
             if (userId > 0) {
                 registerClient(userId, sock);
@@ -762,10 +763,10 @@ void* acceptMessage(void *arg) {
                 continue;
             }
         }
-        else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
+        else if (strncmp(localBuf, "getChatHistory/", 15) == 0) {
             char *parts[2] = {0};
             int count = 0;
-            char *token = strtok(fullMessage + 15, "\x1E");
+            char *token = strtok(localBuf + 15, "\x1E");
             while (token && count < 2) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -883,7 +884,7 @@ void* acceptMessage(void *arg) {
 
         if (strlen(response) > 0) {
             send(sock, response, strlen(response), 0);
-            printf("[ACCEPT MESSAGE] Sent response for request: %s -> %s\n", fullMessage, response);
+            printf("[ACCEPT MESSAGE] Sent response for request: %s -> %s\n", localBuf, response);
         }
     }
 

@@ -164,6 +164,8 @@ void* recieveMessage(void* arg) {
         }
 
         printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
+        printf("[RECEIVE MESSAGE] Server said (single message): %s\n", localBuf);
+        printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
 
         if (strncmp(localBuf, "save-profile/", 13) == 0) {
             printf("[SAVE PROFILE] Profile successfully saved on server\n");
