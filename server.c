@@ -81,7 +81,7 @@ static ClientSession *activeClients = nullptr;
 static pthread_mutex_t clientsMutex = PTHREAD_MUTEX_INITIALIZER;
 
 bool sendPacket(int sock, const char *data) {
-    char packet[BUFFER_SIZE];
+    char packet[132000];
     snprintf(packet, sizeof(packet), "%s\n", data);
     return send(sock, packet, strlen(packet), MSG_NOSIGNAL) > 0;
 }
@@ -592,7 +592,7 @@ void* acceptMessage(void *arg) {
     free(arg);
     char response[MAX_RESPONSE] = {0};
     char localBuf[BUFFER_SIZE];
-    char fullMessage[131072];
+    char fullMessage[132000];
     int totalReceived;
 
     while (1) {
@@ -803,11 +803,12 @@ void* acceptMessage(void *arg) {
                 free(pngData);
 
                 if (b64) {
-                    //char response1[131072];
-                    snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E%s", reciever, b64);
-                    //sendPacket(sock, response);
+                    char response1[132000];
+                    snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E%s", reciever, b64);
+                    sendPacket(sock, response1);
                     free(b64);
                     printf("[GET AVATAR] sent %ld's avatar for %ld (%ld bytes)\n", reciever, sender, fileSize);
+                    continue;
                 }
             } else {
                 // if theres no avatar - sending null

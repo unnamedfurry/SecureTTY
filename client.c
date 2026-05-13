@@ -134,7 +134,7 @@ bool connected = false;
 //void sendMessage(const char *message);
 void* recieveMessage(void* arg) {
     char localBuf[BUFFER_SIZE];
-    char fullMessage[131072];  // large buffer
+    char fullMessage[132000];  // large buffer
     int totalReceived = 0;
 
         // reading till got atleast one full answer
@@ -154,11 +154,10 @@ void* recieveMessage(void* arg) {
             totalReceived += bytes;
             fullMessage[totalReceived] = '\0';
 
-            char *newline = strchr(fullMessage, '\n');
-            while (newline) {
+            char *newline;
+            while ((newline = strchr(fullMessage, '\n')) != NULL) {
                 *newline = '\0';
                 printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
-                printf("[RECEIVE MESSAGE] Server said (single message): %s\n", localBuf);
                 printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
 
                 if (strncmp(localBuf, "save-profile/", 13) == 0) {
@@ -425,9 +424,10 @@ void* recieveMessage(void* arg) {
 
                             FILE *f = fopen(filepath, "wb");
                             if (f) {
-                                fwrite(png_data, 1, decoded_len, f);
+                                size_t written = fwrite(png_data, 1, decoded_len, f);
                                 fclose(f);
-                                printf("[GET AVATAR] Saved %ld.png (%d bytes)\n", userId, decoded_len);
+                                printf("[GET AVATAR] Saved %ld.png | Written: %zu / %d bytes\n",
+                                   userId, written, decoded_len);
                             }
                             free(png_data);
                             requestedAvatarUpdate = true;
@@ -439,10 +439,9 @@ void* recieveMessage(void* arg) {
                 }
 
                 // moving the end
-                size_t processed_len = (newline + 1) - fullMessage;
-                memmove(fullMessage, newline + 1, totalReceived - processed_len);
-                totalReceived -= processed_len;
-                newline = strchr(fullMessage, '\n');
+                size_t processed = (newline + 1) - fullMessage;
+                memmove(fullMessage, newline + 1, totalReceived - processed);
+                totalReceived -= processed;
             }
         }
     return NULL;
