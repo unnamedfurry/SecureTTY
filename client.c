@@ -73,6 +73,7 @@ int messagesCount = 0;
 static Texture2D friendAvatarArr[100] = {0};
 static Texture2D pendingFriendAvatarArr[100] = {0};
 bool requestedAvatarUpdate=false;
+bool hasFriendRequests = false;
 
 // Base64 decode through OpenSSL
 char* Base64Encode(const unsigned char* input, int length) {
@@ -439,6 +440,7 @@ void* recieveMessage(void* arg) {
                         }
 
                         if (parts[0] && parts[1]) {
+                            hasFriendRequests=true;
                             pendingFriends[count].userId = strtol(parts[1], nullptr, 10);
                             if (parts[2]) strncpy(pendingFriends[count].name, parts[2], MAX_NAME);
                             if (parts[3]) strncpy(pendingFriends[count].profileDescription, parts[3], MAX_DESC);
@@ -699,64 +701,86 @@ void DrawTextBoxed(Font font, const char *text, Rectangle container, float fontS
 
 // go ask grok idk
 int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth,
-             Font font, float fontSize, float spacing)
-{
-    if (!text || !output) return 0;
+             Font font, float fontSize, float spacing){
+    if (!text || !output || maxOutputSize <= 0) return 0;
 
     output[0] = '\0';
-    int lines = 0;
     int totalHeight = 0;
-
     char currentLine[1024] = {0};
-    char testLine[1024] = {0};
 
-    const char* wordStart = text;
+    const char* p = text;
 
-    for (const char* p = text; ; ++p) {
-        if (*p == ' ' || *p == '\0' || *p == '\n') {
-            int wordLen = (int)(p - wordStart);
-            char word[512] = {0};
-            if (wordLen > 0) {
-                strncpy(word, wordStart, wordLen);
-                word[wordLen] = '\0';
-            }
+    while (*p) {
+        // skipping \n
+        if (*p == '\n') {
+            strcat(output, currentLine);
+            strcat(output, "\n");
+            totalHeight += (int)fontSize + 6;
+            currentLine[0] = '\0';
+            p++;
+            continue;
+        }
 
-            if (currentLine[0] == '\0') {
-                strcpy(currentLine, word);
-            } else {
-                snprintf(testLine, sizeof(testLine), "%s %s", currentLine, word);
+        // finding next word or chunk before space
+        const char* wordStart = p;
+        while (*p && *p != ' ' && *p != '\n') p++;
+        int wordLen = (int)(p - wordStart);
 
-                Vector2 size = MeasureTextEx(font, testLine, fontSize, spacing);
+        char word[512] = {0};
+        if (wordLen > 0) {
+            strncpy(word, wordStart, wordLen < 511 ? wordLen : 511);
+        }
 
-                if (size.x > maxLineWidth) {
-                    strcat(output, currentLine);
-                    strcat(output, "\n");
-                    lines++;
-                    totalHeight += (int)fontSize + 6;
+        // checking if the word is not crossing chat area
+        char testLine[1024];
+        if (currentLine[0] == '\0') {
+            strcpy(testLine, word);
+        } else {
+            snprintf(testLine, sizeof(testLine), "%s %s", currentLine, word);
+        }
 
-                    strcpy(currentLine, word);
-                } else {
-                    strcpy(currentLine, testLine);
-                }
-            }
+        Vector2 size = MeasureTextEx(font, testLine, fontSize, spacing);
 
-            wordStart = p + 1;
-
-            if (*p == '\0') break;
-            if (*p == '\n') {
+        if (size.x > maxLineWidth) {
+            // if the solid word is going out of bounds -> we cut it
+            if (currentLine[0] != '\0') {
                 strcat(output, currentLine);
                 strcat(output, "\n");
-                lines++;
                 totalHeight += (int)fontSize + 6;
                 currentLine[0] = '\0';
-                wordStart = p + 1;
             }
+
+            // slicing the long world by symbols
+            if (wordLen > 0) {
+                float accumulatedWidth = 0.0f;
+                char temp[2] = {0};
+
+                for (int i = 0; i < wordLen; i++) {
+                    temp[0] = word[i];
+                    float charWidth = MeasureTextEx(font, temp, fontSize, spacing).x;
+
+                    if (accumulatedWidth + charWidth > maxLineWidth && accumulatedWidth > 0) {
+                        strcat(output, currentLine);
+                        strcat(output, "\n");
+                        totalHeight += (int)fontSize + 6;
+                        currentLine[0] = '\0';
+                        accumulatedWidth = 0;
+                    }
+
+                    strcat(currentLine, temp);
+                    accumulatedWidth += charWidth;
+                }
+            }
+        } else {
+            strcpy(currentLine, testLine);
         }
+
+        if (*p == ' ') p++; // skipping space
     }
 
+    // appending last line
     if (currentLine[0] != '\0') {
         strcat(output, currentLine);
-        lines++;
         totalHeight += (int)fontSize + 6;
     }
 
@@ -764,20 +788,23 @@ int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth
 }
 
 // simplified wrapped text drawer
-void DrawWrappedText(const char* text, Vector2 pos, Font font, float fontSize, float spacing, Color color)
-{
+void DrawWrappedText(const char* text, Vector2 pos, Font font, float fontSize, float spacing, Color color){
     char line[1024] = {0};
     Vector2 currentPos = pos;
 
     for (const char* p = text; *p; ++p) {
         if (*p == '\n') {
-            DrawTextEx(font, line, currentPos, fontSize, spacing, color);
+            if (line[0]) {
+                DrawTextEx(font, line, currentPos, fontSize, spacing, color);
+            }
             currentPos.y += fontSize + 6;
             line[0] = '\0';
         } else {
             int len = (int)strlen(line);
-            line[len] = *p;
-            line[len + 1] = '\0';
+            if (len < 1023) {
+                line[len] = *p;
+                line[len + 1] = '\0';
+            }
         }
     }
 
@@ -800,7 +827,7 @@ int main(void) {
     for (int i = 32; i < 128; i++) codepoints[count++] = i;
     for (int i = 0x0400; i <= 0x04FF; i++) codepoints[count++] = i;
     InitAudioDevice();
-    SetTargetFPS(60);
+    SetTargetFPS(140);
     SetTraceLogLevel(LOG_WARNING);
     SetExitKey(KEY_NULL);
 
@@ -851,13 +878,28 @@ int main(void) {
         }
     }
     static float scrollOffset = 0.0f;
+    static float scrollVelocity = 0.0f;     // inertion speed
+    static float scrollFriction = 0.92f;    // fade out timne (0.85 - hard, 0.94 - soft)
     static bool isDraggingScrollbar = false;
+    bool autoScrollAllowed = true;
+    bool loadedChat = true;
 
     while (!WindowShouldClose()) {
+        float contentHeight = 0.0f;
         float wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
-            int step = 35;
-            scrollOffset -= wheel * (float)step;
+            scrollVelocity -= wheel * 15.0f;        // bigger number = faster scroll
+            autoScrollAllowed=false;
+        }
+        if (!isDraggingScrollbar) {
+            // regular scroollo with inertion
+            scrollOffset += scrollVelocity;
+            scrollVelocity *= scrollFriction;       // fadeout
+
+            // if the speed is too slow -> resetting to zero
+            if (fabsf(scrollVelocity) < 0.5f) {
+                scrollVelocity = 0.0f;
+            }
         }
 
         BeginDrawing();
@@ -1071,10 +1113,14 @@ int main(void) {
                     }
                     memset(message, 0, sizeof(message));
                     memset(parsed, 0, strlen(parsed));
+                    autoScrollAllowed=true;
                 }
             }
             if (GuiButton((Rectangle){20, 45, 100, 30}, "+ Друг")) {
                 isAddingFriend=true;
+            }
+            if (hasFriendRequests==true) {
+                DrawCircle(121, 44, 6, RED);
             }
             if (GuiButton((Rectangle){155, 45, 120, 30}, "+ Группа")) {
                 // TODO версия 2.0
@@ -1088,13 +1134,17 @@ int main(void) {
                 if (CheckCollisionPointRec(GetMousePosition(), friendRect)) {
                     DrawRectangleRec(friendRect, (Color){60, 60, 70, 255});
                     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                        currentFriendId = friends[i].userId;
-                        messagesCount = 0;
-                        friends[i].newMessageCount = 0;
+                        if (friends[i].userId != currentFriendId) {
+                            currentFriendId = friends[i].userId;
+                            messagesCount = 0;
+                            friends[i].newMessageCount = 0;
 
-                        char req[64];
-                        snprintf(req, sizeof(req), "getChatHistory/%ld\x1E%ld", config.userId, currentFriendId);
-                        sendMessage(req);
+                            char req[64];
+                            snprintf(req, sizeof(req), "getChatHistory/%ld\x1E%ld", config.userId, currentFriendId);
+                            sendMessage(req);
+                        }
+
+                        autoScrollAllowed=true;
                     }
                 } else {
                     DrawRectangleRec(friendRect, (Color){50, 50, 60, 255});
@@ -1110,14 +1160,16 @@ int main(void) {
                 DrawTextEx(font, friends[i].name, (Vector2){85, friendStartY + 12}, 24, 2, WHITE);
 
                 if (friends[i].newMessageCount > 0) {
-                    char badge[16];
-                    snprintf(badge, sizeof(badge), "%d", friends[i].newMessageCount);
+                    if (friends[i].userId != currentFriendId) {
+                        char badge[16];
+                        snprintf(badge, sizeof(badge), "%d", friends[i].newMessageCount);
+                        int textW = MeasureText(badge, 20);
+                        Rectangle badgeRect = {240, friendStartY + 12, (float)textW + 12, 24};
 
-                    int textW = MeasureText(badge, 20);
-                    Rectangle badgeRect = {240, friendStartY + 12, (float)textW + 12, 24};
-
-                    DrawRectangleRec(badgeRect, RED);
-                    DrawText(badge, (int)badgeRect.x + 6, (int)badgeRect.y + 4, 20, WHITE);
+                        DrawRectangleRec(badgeRect, RED);
+                        DrawText(badge, (int)badgeRect.x + 6, (int)badgeRect.y + 4, 20, WHITE);
+                    }
+                    autoScrollAllowed=true;
                 }
 
                 if (strlen(friends[i].profileDescription) > 0) {
@@ -1132,21 +1184,21 @@ int main(void) {
             }
 
             // Chat section
-            Rectangle chatArea = {310, 80, 980, 700};
-            float contentHeight = 0.0f;
-            {
-                for (int i = 0; i < messagesCount; i++) {
-                    Message *m = &messages[i];
-                    const int maxTextW = (int)chatArea.width - 120;
+            Rectangle chatArea = {300, 80, 980, 700};
+            for (int i = 0; i < messagesCount; i++) {
+                Message *m = &messages[i];
+                const int maxTextW = (int)chatArea.width - 120;
 
-                    char dummy[2048] = {0};
-                    int textH = WrapText(m->message, dummy, sizeof(dummy), maxTextW, font, 22, 2);
-                    contentHeight += (float)textH + 25 + 18;   // text height + indents
-                }
+                char dummy[2048] = {0};
+                int textH = WrapText(m->message, dummy, sizeof(dummy), maxTextW, font, 22, 2);
+                contentHeight += (float)textH + 25 + 18;   // text height + indents
             }
             if (contentHeight < 680) scrollOffset = 0;
-            float maxScroll = fmaxf(0.0f, contentHeight - 680);
+            float maxScroll = fmaxf(0.0f, contentHeight - 680.0f);
             scrollOffset = clamp(scrollOffset, 0.0f, maxScroll);
+            if (autoScrollAllowed==true && messagesCount > 0) {
+                scrollOffset = maxScroll;
+            }
 
             // chat header
             if (currentFriendId != 0) {
@@ -1181,7 +1233,7 @@ int main(void) {
                     (float)bubbleHeight
                 };
 
-                if (bubble.y + (float)bubbleHeight > 140 && bubble.y + (float)bubbleHeight < 820) {
+                if (bubble.y > 80 && bubble.y + (float)bubbleHeight < 840) {
                     Color bubbleColor = isMine ? (Color){0, 120, 215, 255} : (Color){60, 60, 70, 255};
 
                     DrawRectangleRec(bubble, bubbleColor);
@@ -1215,21 +1267,25 @@ int main(void) {
                 if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                     if (CheckCollisionPointRec(mouse, scrollbarRect)) {
                         isDraggingScrollbar = true;
+                        autoScrollAllowed=false;
                     }
                 }
 
                 if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
                     isDraggingScrollbar = false;
+                    autoScrollAllowed=false;
                 }
 
                 if (isDraggingScrollbar) {
-                    float mouseRelative = mouse.y - 100;
+                    autoScrollAllowed=false;
+                    float mouseRelative = mouse.y - scrollbarHeight/2 - 100;
                     scrollOffset = (mouseRelative / 680) * contentHeight;
                 }
             }
 
             // Adding friend field section
             if (isAddingFriend == true) {
+                hasFriendRequests=false;
                 if (IsKeyPressed(KEY_ESCAPE)) isAddingFriend=false;
                 DrawRectangle(1600/2-200, 900/2-200, 400, 400, GRAY);
                 DrawRectangleLines(1600/2-200, 900/2-200, 400, 400, WHITE);
