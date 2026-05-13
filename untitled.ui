@@ -10,7 +10,7 @@
     <height>900</height>
    </rect>
   </property>
-  <property name="UnChat - BETA 2.0">
+  <property name="UnChat - BETA 2.0" stdset="0">
    <string>MainWindow</string>
   </property>
   <widget class="QWidget" name="centralwidget">
@@ -50,6 +50,32 @@
      </property>
      <property name="orientation">
       <enum>Qt::Orientation::Horizontal</enum>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="pushButton">
+     <property name="geometry">
+      <rect>
+       <x>37</x>
+       <y>32</y>
+       <width>100</width>
+       <height>30</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>+ Друг</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="pushButton_2">
+     <property name="geometry">
+      <rect>
+       <x>187</x>
+       <y>32</y>
+       <width>100</width>
+       <height>30</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>+ Группа</string>
      </property>
     </widget>
    </widget>

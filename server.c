@@ -46,6 +46,7 @@ static pthread_t thread_id;
 #define MAX_AVATAR 64
 #define MAX_DESC 1024
 #define MAX_MESS 2048
+#define MAX_RESPONSE MAX_NAME + MAX_EMAIL + MAX_PASS + MAX_AVATAR + MAX_DESC + MAX_MESS
 MYSQL *conn;
 
 //
@@ -79,6 +80,11 @@ typedef struct ClientSession {
 static ClientSession *activeClients = nullptr;
 static pthread_mutex_t clientsMutex = PTHREAD_MUTEX_INITIALIZER;
 
+bool sendPacket(int sock, const char *data) {
+    char packet[BUFFER_SIZE];
+    snprintf(packet, sizeof(packet), "%s\n", data);
+    return send(sock, packet, strlen(packet), MSG_NOSIGNAL) > 0;
+}
 // register client (after authorization)
 void registerClient(long userId, int sock) {
     pthread_mutex_lock(&clientsMutex);
@@ -128,13 +134,13 @@ void unregisterClient(int sock) {
 }
 
 // sending messages to online client
- bool pushToUser(long userId, const char *data) {
+bool pushToUser(long userId, const char *data) {
      pthread_mutex_lock(&clientsMutex);
      ClientSession *curr = activeClients;
 
      while (curr) {
          if (curr->userId == userId) {
-             int sent = (int)send(curr->sock, data, strlen(data), MSG_NOSIGNAL);
+             int sent = sendPacket(curr->sock, data);
              pthread_mutex_unlock(&clientsMutex);
              return sent > 0;
          }
@@ -150,9 +156,9 @@ void getClientUpdates(long userId, int sock) {
         int size = sizeof(char)*1050;
         char *response = malloc(size);
         if (response == NULL) {
-            printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n");
-            snprintf(response, 28, "updateClient/messages/error");
-            send(sock, response, 28, 0);
+            printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer");
+            snprintf(response, 29, "updateClient/messages/error");
+            sendPacket(sock, response);
             free(response);
             return;
         }
@@ -192,7 +198,7 @@ void getClientUpdates(long userId, int sock) {
             offset += snprintf(response+offset, sizeof(response)-offset, "0\x1E");
         }
         response[++offset] = '\0';
-        send(sock, response, sizeof(response), 0);
+        sendPacket(sock, response);
         free(response);
     }
 
@@ -201,8 +207,8 @@ void getClientUpdates(long userId, int sock) {
         char *response = malloc(size);
         if (response == NULL) {
             printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n");
-            snprintf(response, 34, "updateClient/friendRequests/error");
-            send(sock, response, 34, 0);
+            snprintf(response, 35, "updateClient/friendRequests/error");
+            sendPacket(sock, response);
             free(response);
             return;
         }
@@ -249,7 +255,7 @@ void getClientUpdates(long userId, int sock) {
             offset += snprintf(response+offset, sizeof(response)-offset, "0");
         }
         response[++offset] = '\0';
-        send(sock, response, sizeof(response), 0);
+        sendPacket(sock, response);
         free(response);
     }
 }
@@ -259,8 +265,8 @@ void getChatHistory(long userId, long friendId, int sock) {
     char *response = malloc(bufSize);
     if (!response) {
         printf("[FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n");
-        snprintf(response, 21, "getChatHistory/error");
-        send(sock, response, 21, 0);
+        snprintf(response, 23, "getChatHistory/error");
+        sendPacket(sock, response);
         free(response);
         return;
     }
@@ -276,8 +282,8 @@ void getChatHistory(long userId, long friendId, int sock) {
         userId, friendId, friendId, userId);
 
     if (mysql_query(conn, query)) {
-        snprintf(response, 21, "getChatHistory/error");
-        send(sock, response, 21, 0);
+        snprintf(response, 23, "getChatHistory/error");
+        sendPacket(sock, response);
         free(response);
         return;
     }
@@ -285,8 +291,9 @@ void getChatHistory(long userId, long friendId, int sock) {
     MYSQL_RES *res = mysql_store_result(conn);
     if (!res) {
         response[++offset] = '\0';
-        snprintf(response, 21, "getChatHistory/empty");
-        send(sock, response, 21, 0);
+        snprintf(response, 23, "getChatHistory/empty");
+        sendPacket(sock, response);
+        free(response);
         return;
     }
 
@@ -311,11 +318,11 @@ void getChatHistory(long userId, long friendId, int sock) {
 
     if (offset > 20) {
         response[++offset] = '\0';
-        send(sock, response, sizeof(response), 0);
+        sendPacket(sock, response);
         printf("[GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", strlen(response), userId, friendId);
     } else {
-        snprintf(response, 21, "getChatHistory/empty");
-        send(sock, response, 21, 0);
+        snprintf(response, 23, "getChatHistory/empty");
+        sendPacket(sock, response);
     }
     free(response);
 }
@@ -401,16 +408,16 @@ void getFriends(long userId, int sock) {
     if (mysql_query(conn, query)) {
         printf("[GET FRIENDS LIST] Failed to query friends for user %ld\n", userId);
         memset(response, 0, sizeof(response));
-        strncpy(response, "getFriendList/error", 21);
-        send(sock, response, 21, 0);
+        strncpy(response, "getFriendList/error", 23);
+        sendPacket(sock, response);
         return;
     }
 
     MYSQL_RES *res = mysql_store_result(conn);
     if (res == NULL) {
         memset(response, 0, sizeof(response));
-        strncpy(response, "getFriendList/empty", 21);
-        send(sock, response, 21, 0);
+        strncpy(response, "getFriendList/empty", 23);
+        sendPacket(sock, response);
         return;
     }
 
@@ -449,12 +456,12 @@ void getFriends(long userId, int sock) {
     // sending result
     if (offset > 15) {   // if there is atleast one friend
         response[++offset] = '\0';
-        send(sock, response, sizeof(response), 0);
+        sendPacket(sock, response);
         printf("[GET FRIENDS LIST] Sent %zu bytes for user %ld (%d friends)\n", strlen(response), userId, friends);
     } else {
         memset(response, 0, sizeof(response));
-        strncpy(response, "getFriendList/empty", 21);
-        send(sock, response, 21, 0);
+        strncpy(response, "getFriendList/empty", 23);
+        sendPacket(sock, response);
     }
 }
 
@@ -583,7 +590,7 @@ bool finishedResponse = false;
 void* acceptMessage(void *arg) {
     int sock = *(int*)arg;
     free(arg);
-    char response[128] = {0};
+    char response[MAX_RESPONSE] = {0};
     char localBuf[BUFFER_SIZE];
     char fullMessage[131072];
     int totalReceived;
@@ -593,45 +600,36 @@ void* acceptMessage(void *arg) {
         memset(fullMessage, 0, sizeof(fullMessage));
         finishedResponse = false;
 
-        while (1) { // building a single message of several parts (mostly for avatar uploads)
+        while (1) { // splitting or combining packets based on \n persistence in the end of the packet
             memset(localBuf, 0, sizeof(localBuf));
             int bytes = read(sock, localBuf, sizeof(localBuf) - 1);
-            if (bytes < 0) {
-                printf("[ACCEPT MESSAGE] Read error\n");
+            if (bytes <= 0) {
+                printf("[ACCEPT MESSAGE] Client disconnected (sock %d)\n", sock);
                 goto client_disconnect;
-            }
-            if (bytes == 0) {
-                printf("[NETWORK] Client disconnected (sock %d)\n", sock);
-                goto client_disconnect;
-            }
-
-            // protection from overflow
-            if (totalReceived + bytes > sizeof(fullMessage) - 1) {
-                printf("[ACCEPT MESSAGE] Warning: message too big, truncated!\n");
-                bytes = sizeof(fullMessage) - 1 - totalReceived;
             }
 
             memcpy(fullMessage + totalReceived, localBuf, bytes);
             totalReceived += bytes;
             fullMessage[totalReceived] = '\0';
 
-            if (bytes < sizeof(localBuf) - 1) {
+            if (strchr(localBuf, '\n') || bytes < sizeof(localBuf)-1) {
                 break;
             }
         }
 
+        fullMessage[strcspn(fullMessage, "\n")] = '\0';
         printf("[ACCEPT MESSAGE] Got %d bytes from client (sock %d)\n", totalReceived, sock);
         printf("[ACCEPT MESSAGE] Client said (single message): %s\n", localBuf);
         printf("[ACCEPT MESSAGE] Client said (full message): %s\n", fullMessage);
 
-        if (strcmp(localBuf, "test/") == 0) {
-            strcpy(response, "ok");
+        if (strcmp(fullMessage, "test/") == 0) {
+            strcpy(response, "ok\n");
         }
-        else if (strncmp(localBuf, "receive-message/", 16) == 0) {
-            printf("[RECEIVE MESSAGE] Saving message: %s\n", localBuf);
+        else if (strncmp(fullMessage, "receive-message/", 16) == 0) {
+            printf("[RECEIVE MESSAGE] Saving message: %s\n", fullMessage);
             char *parts[4] = {0};
             int count = 0;
-            char *token = strtok(localBuf + 16, "\x1E");
+            char *token = strtok(fullMessage + 16, "\x1E");
             while (token && count < 4) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -642,34 +640,34 @@ void* acceptMessage(void *arg) {
             if (saveMessageToDB(messageId, senderId, receiverId, parts[3])) {
                 printf("[RECEIVE MESSAGE] Message saved: %ld -> %ld\n", senderId, receiverId);
 
-                char pushPacket[BUFFER_SIZE];
-                snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s", messageId, senderId, parts[3], "now");
+                //char pushPacket[BUFFER_SIZE];
+                snprintf(response, sizeof(response), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s\n", messageId, senderId, parts[3], "now");
 
-                if (!pushToUser(receiverId, pushPacket)) {
-                    printf("[RECEIVE MESSAGE] Receiver %ld is offline, message will be saved to DB\n", receiverId);
-                }
+                // if (!pushToUser(receiverId, pushPacket)) {
+                //     printf("[RECEIVE MESSAGE] Receiver %ld is offline, message will be saved to DB\n", receiverId);
+                // }
             } else {
                 printf("[RECEIVE MESSAGE] Failed to save message to db: %ld, %ld\n", senderId, messageId);
-                strcpy(response, "err");
+                strcpy(response, "err\n");
             }
         }
-        else if (strncmp(localBuf, "createId/user", 13) == 0) {
+        else if (strncmp(fullMessage, "createId/user", 13) == 0) {
             srand(time(nullptr) + clock());
             long id = rand()%2147483647;
-            sprintf(response, "createId/user/%ld", id);
+            sprintf(response, "createId/user/%ld\n", id);
             printf("[CREATE USER ID] New Id generated for user: %ld\n", id);
         }
-        else if (strncmp(localBuf, "createId/message", 16) == 0) {
+        else if (strncmp(fullMessage, "createId/message", 16) == 0) {
             srand(time(nullptr) + clock());
             long id = rand()%2147483647;
-            sprintf(response, "createId/message/%ld", id);
+            sprintf(response, "createId/message/%ld\n", id);
             printf("[CREATE MESSAGE ID] New Id generated for message: %ld\n", id);
         }
-        else if (strncmp(localBuf, "save-profile/", 13) == 0) {
+        else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
 
             char *parts[6] = {0};
             int count = 0;
-            char *token = strtok(localBuf + 13, "\x1E");
+            char *token = strtok(fullMessage + 13, "\x1E");
 
             while (token && count < 6) {
                 parts[count++] = token;
@@ -684,26 +682,26 @@ void* acceptMessage(void *arg) {
                                             parts[4], parts[5]);
 
                 if (success) {
-                    send(sock, "save-profile/ok", 15, 0);
+                    sendPacket(sock, "save-profile/ok");
                 } else {
-                    send(sock, "save-profile/error", 18, 0);
+                    sendPacket(sock, "save-profile/error");
                 }
             } else {
-                send(sock, "save-profile/badformat", 22, 0);
+                sendPacket(sock, "save-profile/badformat");
             }
         }
-        else if (strncmp(localBuf, "getFriendsList/", 15) == 0) {
-            long user_id = strtol(localBuf + 15, nullptr, 10);
+        else if (strncmp(fullMessage, "getFriendsList/", 15) == 0) {
+            long user_id = strtol(fullMessage + 15, nullptr, 10);
             printf("[GET FRIENDS LIST] received for %ld\n", user_id);
             if (user_id > 0) {
                 getFriends(user_id, sock);
                 continue;
             }
         }
-        else if (strncmp(localBuf, "addFriend/", 10) == 0) {
+        else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
             char *parts[2] = {0};
             int count = 0;
-            char *token = strtok(localBuf + 10, "\x1E");
+            char *token = strtok(fullMessage + 10, "\x1E");
             while (token && count < 2) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -719,21 +717,21 @@ void* acceptMessage(void *arg) {
                         printf("[ADD FRIEND] Sent successfully %ld -> %ld\n", senderId, receiverId);
                     } else {
                         printf("[ADD FRIEND] Failed to save request\n");
-                        strncpy(response, "addFriend/error", 15);
+                        strncpy(response, "addFriend/error\n", 16);
                     }
                 } else {
                     printf("[ADD FRIEND] Bad ID\n");
-                    strncpy(response, "addFriend/error", 15);
+                    strncpy(response, "addFriend/error\n", 16);
                 }
             } else {
                 printf("[ADD FRIEND] Bad format, got %d/2 parts\n", count);
-                strncpy(response, "addFriend/badformat", 19);
+                strncpy(response, "addFriend/badformat\n", 20);
             }
         }
-        else if (strncmp(localBuf, "acceptFriend/", 13) == 0) {
+        else if (strncmp(fullMessage, "acceptFriend/", 13) == 0) {
             char *parts[2] = {0};
             int count = 0;
-            char *token = strtok(localBuf + 13, "\x1E");
+            char *token = strtok(fullMessage + 13, "\x1E");
             while (token && count < 2) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -750,12 +748,12 @@ void* acceptMessage(void *arg) {
                     snprintf(friendsListCmd, sizeof(friendsListCmd), "getFriendsList/%ld", receiverId);
                 } else {
                     printf("[ACCEPT FRIEND] failed to add friend %ld -> %ld\n", senderId, receiverId);
-                    strncpy(response, "acceptFriend/error", 18);
+                    strncpy(response, "acceptFriend/error\n", 19);
                 }
             }
         }
-        else if (strncmp(localBuf, "updateClient/", 13) == 0) {
-            long userId = strtol(localBuf + 13, nullptr, 10);
+        else if (strncmp(fullMessage, "updateClient/", 13) == 0) {
+            long userId = strtol(fullMessage + 13, nullptr, 10);
             printf("[UPDATE CLIENT] Received for client/user %ld\n", userId);
             if (userId > 0) {
                 registerClient(userId, sock);
@@ -763,10 +761,10 @@ void* acceptMessage(void *arg) {
                 continue;
             }
         }
-        else if (strncmp(localBuf, "getChatHistory/", 15) == 0) {
+        else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
             char *parts[2] = {0};
             int count = 0;
-            char *token = strtok(localBuf + 15, "\x1E");
+            char *token = strtok(fullMessage + 15, "\x1E");
             while (token && count < 2) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
@@ -805,17 +803,17 @@ void* acceptMessage(void *arg) {
                 free(pngData);
 
                 if (b64) {
-                    char response1[131072];
-                    snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E%s", reciever, b64);
-                    send(sock, response, sizeof(response), 0);
+                    //char response1[131072];
+                    snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E%s", reciever, b64);
+                    //sendPacket(sock, response);
                     free(b64);
                     printf("[GET AVATAR] sent %ld's avatar for %ld (%ld bytes)\n", reciever, sender, fileSize);
                 }
             } else {
                 // if theres no avatar - sending null
-                char response1[64];
-                snprintf(response1, sizeof(response1), "getAvatarResponse/%ld\x1E", reciever);
-                send(sock, response, sizeof(response), 0);
+                //char response1[64];
+                snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E", reciever);
+                //sendPacket(sock, response1);
                 printf("[GET AVATAR] %ld's avatar not found\n", reciever);
             }
         }
@@ -883,8 +881,8 @@ void* acceptMessage(void *arg) {
         }
 
         if (strlen(response) > 0) {
-            send(sock, response, strlen(response), 0);
-            printf("[ACCEPT MESSAGE] Sent response for request: %s -> %s\n", localBuf, response);
+            sendPacket(sock, response);
+            printf("[ACCEPT MESSAGE] Sent response for request: %s -> %s\n", fullMessage, response);
         }
     }
 

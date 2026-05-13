@@ -67,7 +67,6 @@ typedef struct {
 } Message;
 Message messages[1000000] = {0};
 long randomId = 0L;
-bool finishedResponse = false;
 long currentFriendId = 0L;
 int messagesCount = 0;
 static Texture2D friendAvatarArr[100] = {0};
@@ -138,324 +137,314 @@ void* recieveMessage(void* arg) {
     char fullMessage[131072];  // large buffer
     int totalReceived = 0;
 
-    while (connected) {
-        finishedResponse = false;
-        memset(localBuf, 0, sizeof(localBuf));
-        memset(fullMessage, 0, sizeof(fullMessage));
-        totalReceived = 0;
-
         // reading till got atleast one full answer
-        while (true) {
+        while (connected) {
+            memset(localBuf, 0, sizeof(localBuf));
             int bytes = read(sock, localBuf, sizeof(localBuf)-1);
             if (bytes <= 0) {
                 connected = false;
-                printf("[RECEIVE MESSAGE] Connection closed\n");
+                printf("[RECEIVE] Connection lost\n");
                 return NULL;
             }
-
+            if (totalReceived + bytes > sizeof(fullMessage) - 1) {
+                printf("[RECEIVE] Message too big! Clearing buffer.\n");
+                totalReceived = 0;
+            }
             memcpy(fullMessage + totalReceived, localBuf, bytes);
             totalReceived += bytes;
             fullMessage[totalReceived] = '\0';
 
-            // if the message is too long, we continue reading
-            if (bytes < sizeof(localBuf)-1) {
-                break;  // probably the end of message
-            }
-        }
+            char *newline = strchr(fullMessage, '\n');
+            while (newline) {
+                *newline = '\0';
+                printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
+                printf("[RECEIVE MESSAGE] Server said (single message): %s\n", localBuf);
+                printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
 
-        printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
-        printf("[RECEIVE MESSAGE] Server said (single message): %s\n", localBuf);
-        printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
-
-        if (strncmp(localBuf, "save-profile/", 13) == 0) {
-            printf("[SAVE PROFILE] Profile successfully saved on server\n");
-        }
-        else if (strncmp(localBuf, "createId/user/", 14) == 0) {
-            long newId = atol(localBuf + 14);
-            if (newId > 0) {
-                config.userId = newId;
-                printf("[CREATE USER ID] Got new id from server: %ld\n", newId);
-            }
-        }
-        else if (strncmp(localBuf, "createId/message/", 17) == 0) {
-            long newId = atol(localBuf + 17);
-            if (newId > 0) {
-                randomId = newId;
-                printf("[CREATE MESSAGE ID] Got new id from server: %ld\n", newId);
-            }
-        }
-        else if (strncmp(localBuf, "getFriendsList/", 15) == 0) {
-            int count = 0;
-            char *token = strtok(localBuf + 15, "\x1E");
-            token = strtok(nullptr, "\x1E");
-
-            while (token && count < 100) {
-                char tokenCopy[BUFFER_SIZE];
-                strncpy(tokenCopy, token, sizeof(tokenCopy)-1);
-                tokenCopy[sizeof(tokenCopy)-1] = '\0';
-
-                char *parts[4] = {0};
-                int count2 = 0;
-                char *token2 = strtok(tokenCopy, "\x1F");
-                while (token2 && count2 < 4) {
-                    parts[count2++] = token2;
-                    token2 = strtok(nullptr, "\x1F");
+                if (strncmp(localBuf, "save-profile/", 13) == 0) {
+                    printf("[SAVE PROFILE] Profile successfully saved on server\n");
                 }
-                Friend friend_;
+                else if (strncmp(localBuf, "createId/user/", 14) == 0) {
+                    long newId = atol(localBuf + 14);
+                    if (newId > 0) {
+                        config.userId = newId;
+                        printf("[CREATE USER ID] Got new id from server: %ld\n", newId);
+                    }
+                }
+                else if (strncmp(localBuf, "createId/message/", 17) == 0) {
+                    long newId = atol(localBuf + 17);
+                    if (newId > 0) {
+                        randomId = newId;
+                        printf("[CREATE MESSAGE ID] Got new id from server: %ld\n", newId);
+                    }
+                }
+                else if (strncmp(localBuf, "getFriendsList/", 15) == 0) {
+                    int count = 0;
+                    char *token = strtok(localBuf + 15, "\x1E");
+                    token = strtok(nullptr, "\x1E");
 
-                // protection from NULL
-                if (parts[0]) strcpy(friend_.name, parts[0]);
-                else friend_.name[0] = '\0';
+                    while (token && count < 100) {
+                        char tokenCopy[BUFFER_SIZE];
+                        strncpy(tokenCopy, token, sizeof(tokenCopy)-1);
+                        tokenCopy[sizeof(tokenCopy)-1] = '\0';
 
-                friend_.userId = (parts[1]) ? strtol(parts[1], nullptr, 10) : 0;
-                char req[32];
-                snprintf(req, 31, "getAvatar/%ld/%ld", config.userId, friend_.userId);
-                //sendMessage(req);
-                send(sock, req, sizeof(req), 0);
-
-                if (parts[2]) strcpy(friend_.avatarUrl, parts[2]);
-                else friend_.avatarUrl[0] = '\0';
-
-                if (parts[3]) strcpy(friend_.profileDescription, parts[3]);
-                else friend_.profileDescription[0] = '\0';
-
-                friends[count] = friend_;
-                count++;
-
-                token = strtok(nullptr, "\x1E");
-            }
-            printf("[GET FRIENDS LIST] Received friends list (%d friends)\n", count);
-        }
-        else if (strncmp(localBuf, "getChatHistory/", 15) == 0) {
-            char *dataStart = strchr(localBuf + 15, '\x1E');
-            if (!dataStart) {
-                printf("[GET CHAT HISTORY] History is empty\n");
-                messagesCount = 0;
-                currentFriendId = strtol(localBuf + 15, nullptr, 10);
-                return NULL;
-            }
-
-            dataStart++;
-            long friendId = strtol(localBuf + 15, nullptr, 10);
-
-            // copy all at a time
-            size_t dataLen = strlen(dataStart) + 1;
-            char *dataCopy = malloc(dataLen);
-            if (!dataCopy) return NULL;
-
-            memcpy(dataCopy, dataStart, dataLen);
-
-            messagesCount = 0;
-            int loaded = 0;
-
-            char *p = dataCopy;
-
-            while (p && *p && messagesCount < 999999) {
-                // locating the end of the block
-                char *record_end = strchr(p, '\x1E');
-                if (record_end) *record_end = '\0';   // temporary cutting
-
-                if (strlen(p) > 0) {
-                    char *q = p;
-
-                    // parsing three parts through \x1F
-                    char *part1 = q;
-                    char *part2 = strchr(q, '\x1F');
-                    char *part3 = nullptr;
-                    if (part2) {
-                        *part2 = '\0';
-                        q = part2 + 1;
-
-                        part3 = strchr(q, '\x1F');
-                        if (part3) {
-                            *part3 = '\0';
-                            q = part3 + 1;           // part3 is now our text
-                        } else {
-                            q = nullptr;
+                        char *parts[4] = {0};
+                        int count2 = 0;
+                        char *token2 = strtok(tokenCopy, "\x1F");
+                        while (token2 && count2 < 4) {
+                            parts[count2++] = token2;
+                            token2 = strtok(nullptr, "\x1F");
                         }
-                    } else {
-                        q = nullptr;
+                        Friend friend_;
+
+                        // protection from NULL
+                        if (parts[0]) strcpy(friend_.name, parts[0]);
+                        else friend_.name[0] = '\0';
+
+                        friend_.userId = (parts[1]) ? strtol(parts[1], nullptr, 10) : 0;
+                        char req[32];
+                        snprintf(req, 31, "getAvatar/%ld/%ld", config.userId, friend_.userId);
+                        //sendMessage(req);
+                        send(sock, req, sizeof(req), 0);
+
+                        if (parts[2]) strcpy(friend_.avatarUrl, parts[2]);
+                        else friend_.avatarUrl[0] = '\0';
+
+                        if (parts[3]) strcpy(friend_.profileDescription, parts[3]);
+                        else friend_.profileDescription[0] = '\0';
+
+                        friends[count] = friend_;
+                        count++;
+
+                        token = strtok(nullptr, "\x1E");
+                    }
+                    printf("[GET FRIENDS LIST] Received friends list (%d friends)\n", count);
+                }
+                else if (strncmp(localBuf, "getChatHistory/", 15) == 0) {
+                    char *dataStart = strchr(localBuf + 15, '\x1E');
+                    if (!dataStart) {
+                        printf("[GET CHAT HISTORY] History is empty\n");
+                        messagesCount = 0;
+                        currentFriendId = strtol(localBuf + 15, nullptr, 10);
+                        return NULL;
                     }
 
-                    if (part1 && part2 && part3 && strlen(q) > 0 && !strstr(q, "null")) {
-                        messages[messagesCount].messageId = strtol(part1, nullptr, 10);
-                        messages[messagesCount].senderId  = strtol(part2 + 1, nullptr, 10);  // +1 bc of \x1F
-                        messages[messagesCount].receiverId =
-                            (messages[messagesCount].senderId == config.userId) ? friendId : config.userId;
+                    dataStart++;
+                    long friendId = strtol(localBuf + 15, nullptr, 10);
 
-                        strncpy(messages[messagesCount].message, q, 2048);
-                        messages[messagesCount].message[2049] = '\0';
+                    // copy all at a time
+                    size_t dataLen = strlen(dataStart) + 1;
+                    char *dataCopy = malloc(dataLen);
+                    if (!dataCopy) return NULL;
 
-                        messagesCount++;
-                        loaded++;
-                    }
+                    memcpy(dataCopy, dataStart, dataLen);
 
-                }
-                // jumping to next block
-                if (record_end) {
-                    *record_end = '\x1E';   // restoring
-                    p = record_end + 1;
-                } else {
-                    p = nullptr;
-                }
-            }
+                    messagesCount = 0;
+                    int loaded = 0;
 
-            free(dataCopy);
-            currentFriendId = friendId;
+                    char *p = dataCopy;
 
-            printf("[GET CHAT HISTORY] Loaded %d messages with %ld\n", loaded, friendId);
-        }
-        else if (strncmp(localBuf, "err", 3) == 0) {
-            printf("[ERROR] Server returned error for past action\n");
-        }
-        else if (strncmp(localBuf, "newMessage\x1E", 11) == 0) {
-            char *parts[4] = {0};
-            int cnt = 0;
-            char *token = strtok(localBuf + 11, "\x1F");
+                    while (p && *p && messagesCount < 999999) {
+                        // locating the end of the block
+                        char *record_end = strchr(p, '\x1E');
+                        if (record_end) *record_end = '\0';   // temporary cutting
 
-            while (token && cnt < 4) {
-                parts[cnt++] = token;
-                token = strtok(nullptr, "\x1F");
-            }
+                        if (strlen(p) > 0) {
+                            char *q = p;
 
-            if (cnt >= 3) {
-                long msgId     = strtol(parts[0], nullptr, 10);
-                long senderId  = strtol(parts[1], nullptr, 10);
-                const char *text = parts[2];
-                // const char *time = parts[3]; - may use later
+                            // parsing three parts through \x1F
+                            char *part1 = q;
+                            char *part2 = strchr(q, '\x1F');
+                            char *part3 = nullptr;
+                            if (part2) {
+                                *part2 = '\0';
+                                q = part2 + 1;
 
-                // updating new message counter badge
-                for (int i = 0; i < 100; i++) {
-                    if (friends[i].userId == senderId) {
-                        friends[i].newMessageCount++;
-                        break;
-                    }
-                }
-
-                // if the chat is opened - adding to messages
-                if (currentFriendId == senderId) {
-                    if (messagesCount < 1000000) {
-                        messages[messagesCount].messageId = msgId;
-                        messages[messagesCount].senderId = senderId;
-                        messages[messagesCount].receiverId = config.userId;
-                        strncpy(messages[messagesCount].message, text, 2048);
-                        messagesCount++;
-                    }
-                }
-
-                printf("[GET MESSAGE] Got new push-message from %ld: %s\n", senderId, text);
-            }
-        }
-        else if (strncmp(localBuf, "newFriendRequest\x1E", 18) == 0) {
-            char *parts[5] = {0};
-            int cnt = 0;
-            char *token = strtok(localBuf + 18, "\x1F");
-            while (token && cnt < 5) {
-                parts[cnt++] = token;
-                token = strtok(nullptr, "\x1F");
-            }
-
-            if (cnt >= 4) {
-                long requestId = strtol(parts[0], nullptr, 10);
-                long senderId  = strtol(parts[1], nullptr, 10);
-                const char *username = parts[2];
-
-                printf("[NEW FRIEND REQUEST] Got friend request from %ld\n", senderId);
-
-                // Можно добавить в отдельный массив или просто вывести уведомление
-                // Позже можно сделать попап с кнопками "Принять / Отклонить"
-            }
-        }
-        else if (strncmp(localBuf, "updateClient/messages", 21) == 0) {
-            char *ptr = localBuf + 21;
-
-            int totalNew = (int)strtol(ptr, &ptr, 10);
-            ptr = strchr(ptr, '\x1E');
-            if (!ptr) return NULL;
-            ptr++;  // getting right to the data while skipping header and \x1E
-
-            // clear old counters
-            for (int i = 0; i < 100; i++) {
-                friends[i].newMessageCount = 0;
-            }
-
-            char *token = strtok(ptr, "\x1E");
-            while (token) {
-                char *parts[2] = {0};
-                int c = 0;
-                char *t2 = strtok(token, "\x1F");
-                while (t2 && c < 2) {
-                    parts[c++] = t2;
-                    t2 = strtok(nullptr, "\x1F");
-                }
-
-                if (c == 2) {
-                    long senderId = strtol(parts[0], nullptr, 10);
-                    int count = atoi(parts[1]);
-
-                    for (int i = 0; i < 100; i++) {
-                        if (friends[i].userId == senderId) {
-                            friends[i].newMessageCount = count;
-                            break;
-                        }
-                    }
-                }
-                token = strtok(nullptr, "\x1E");
-            }
-
-            printf("[UPDATE CLIENT] Got %d new messages\n", totalNew);
-        }
-        else if (strncmp(localBuf, "updateClient/friendRequests", 27) == 0) {
-            printf("[UPDATE CLIENT] Refreshing friend requests\n");
-            // TODO??
-        }
-        if (strncmp(fullMessage, "getAvatarResponse/", 18) == 0) {
-            printf("[GET AVATAR] Received (%d bytes)\n", totalReceived);
-
-            char *ptr = fullMessage + 18;
-            long userId = strtol(ptr, &ptr, 10);
-
-            if (*ptr == '\x1E') {
-                char *b64_data = ptr + 1;
-
-                int decoded_len = 0;
-                unsigned char* png_data = Base64Decode(b64_data, &decoded_len);
-
-                if (png_data && decoded_len > 1000) {   // minimum
-                    if (!DirectoryExists("avatars")) MakeDirectory("avatars");
-
-                    char filepath[128];
-                    snprintf(filepath, sizeof(filepath), "avatars/%ld.png", userId);
-
-                    FILE *f = fopen(filepath, "wb");
-                    if (f) {
-                        fwrite(png_data, 1, decoded_len, f);
-                        fclose(f);
-                    }
-                    FILE *f2 = fopen(filepath, "wb");
-                    if (f2) {
-                        fwrite(png_data, 1, decoded_len, f2);
-                        fclose(f2);
-
-                        if (decoded_len > 8) {
-                            if (png_data[0] == 0x89 && png_data[1] == 'P' && png_data[2] == 'N' && png_data[3] == 'G') {
-                                printf("[GET AVATAR] PNG signature good, saved %ld's avatar successfully\n", userId);
+                                part3 = strchr(q, '\x1F');
+                                if (part3) {
+                                    *part3 = '\0';
+                                    q = part3 + 1;           // part3 is now our text
+                                } else {
+                                    q = nullptr;
+                                }
                             } else {
-                                printf("[GET AVATAR] Bad PNG signature (first 4 bytes: %02X %02X %02X %02X), failed to save %ld's avatar\n",
-                                       png_data[0], png_data[1], png_data[2], png_data[3], userId);
+                                q = nullptr;
+                            }
+
+                            if (part1 && part2 && part3 && strlen(q) > 0 && !strstr(q, "null")) {
+                                messages[messagesCount].messageId = strtol(part1, nullptr, 10);
+                                messages[messagesCount].senderId  = strtol(part2 + 1, nullptr, 10);  // +1 bc of \x1F
+                                messages[messagesCount].receiverId =
+                                    (messages[messagesCount].senderId == config.userId) ? friendId : config.userId;
+
+                                strncpy(messages[messagesCount].message, q, 2048);
+                                messages[messagesCount].message[2049] = '\0';
+
+                                messagesCount++;
+                                loaded++;
+                            }
+
+                        }
+                        // jumping to next block
+                        if (record_end) {
+                            *record_end = '\x1E';   // restoring
+                            p = record_end + 1;
+                        } else {
+                            p = nullptr;
+                        }
+                    }
+
+                    free(dataCopy);
+                    currentFriendId = friendId;
+
+                    printf("[GET CHAT HISTORY] Loaded %d messages with %ld\n", loaded, friendId);
+                }
+                else if (strncmp(localBuf, "err", 3) == 0) {
+                    printf("[ERROR] Server returned error for past action\n");
+                }
+                else if (strncmp(localBuf, "newMessage\x1E", 11) == 0) {
+                    char *parts[4] = {0};
+                    int cnt = 0;
+                    char *token = strtok(localBuf + 11, "\x1F");
+
+                    while (token && cnt < 4) {
+                        parts[cnt++] = token;
+                        token = strtok(nullptr, "\x1F");
+                    }
+
+                    if (cnt >= 3) {
+                        long msgId     = strtol(parts[0], nullptr, 10);
+                        long senderId  = strtol(parts[1], nullptr, 10);
+                        const char *text = parts[2];
+                        // const char *time = parts[3]; - may use later
+
+                        // updating new message counter badge
+                        for (int i = 0; i < 100; i++) {
+                            if (friends[i].userId == senderId) {
+                                friends[i].newMessageCount++;
+                                break;
                             }
                         }
-                    }
-                    free(png_data);
-                } else {
-                    printf("[GET AVATAR] Error decoding avatar data (possibly user has no avatar)\n");
-                }
-            }
-            requestedAvatarUpdate=true;
-        }
 
-        finishedResponse = true;
-    }
+                        // if the chat is opened - adding to messages
+                        if (currentFriendId == senderId) {
+                            if (messagesCount < 1000000) {
+                                messages[messagesCount].messageId = msgId;
+                                messages[messagesCount].senderId = senderId;
+                                messages[messagesCount].receiverId = config.userId;
+                                strncpy(messages[messagesCount].message, text, 2048);
+                                messagesCount++;
+                            }
+                        }
+
+                        printf("[GET MESSAGE] Got new push-message from %ld: %s\n", senderId, text);
+                    }
+                }
+                else if (strncmp(localBuf, "newFriendRequest\x1E", 18) == 0) {
+                    char *parts[5] = {0};
+                    int cnt = 0;
+                    char *token = strtok(localBuf + 18, "\x1F");
+                    while (token && cnt < 5) {
+                        parts[cnt++] = token;
+                        token = strtok(nullptr, "\x1F");
+                    }
+
+                    if (cnt >= 4) {
+                        long requestId = strtol(parts[0], nullptr, 10);
+                        long senderId  = strtol(parts[1], nullptr, 10);
+                        const char *username = parts[2];
+
+                        printf("[NEW FRIEND REQUEST] Got friend request from %ld\n", senderId);
+
+                        // Можно добавить в отдельный массив или просто вывести уведомление
+                        // Позже можно сделать попап с кнопками "Принять / Отклонить"
+                    }
+                }
+                else if (strncmp(localBuf, "updateClient/messages", 21) == 0) {
+                    char *ptr = localBuf + 21;
+
+                    int totalNew = (int)strtol(ptr, &ptr, 10);
+                    ptr = strchr(ptr, '\x1E');
+                    if (!ptr) return NULL;
+                    ptr++;  // getting right to the data while skipping header and \x1E
+
+                    // clear old counters
+                    for (int i = 0; i < 100; i++) {
+                        friends[i].newMessageCount = 0;
+                    }
+
+                    char *token = strtok(ptr, "\x1E");
+                    while (token) {
+                        char *parts[2] = {0};
+                        int c = 0;
+                        char *t2 = strtok(token, "\x1F");
+                        while (t2 && c < 2) {
+                            parts[c++] = t2;
+                            t2 = strtok(nullptr, "\x1F");
+                        }
+
+                        if (c == 2) {
+                            long senderId = strtol(parts[0], nullptr, 10);
+                            int count = atoi(parts[1]);
+
+                            for (int i = 0; i < 100; i++) {
+                                if (friends[i].userId == senderId) {
+                                    friends[i].newMessageCount = count;
+                                    break;
+                                }
+                            }
+                        }
+                        token = strtok(nullptr, "\x1E");
+                    }
+
+                    printf("[UPDATE CLIENT] Got %d new messages\n", totalNew);
+                }
+                else if (strncmp(localBuf, "updateClient/friendRequests", 27) == 0) {
+                    printf("[UPDATE CLIENT] Refreshing friend requests\n");
+                    // TODO??
+                }
+                if (strncmp(fullMessage, "getAvatarResponse/", 18) == 0) {
+                    printf("[GET AVATAR] Received (%d bytes)\n", totalReceived);
+
+                    char *ptr = fullMessage + 18;
+                    long userId = strtol(ptr, &ptr, 10);
+
+                    if (*ptr == '\x1E') {
+                        char *b64_start = ptr + 1;
+                        char *b64_end = strchr(b64_start, '\x1E');
+                        if (b64_end) *b64_end = '\0';
+
+                        int decoded_len = 0;
+                        unsigned char* png_data = Base64Decode(b64_start, &decoded_len);
+
+                        if (png_data && decoded_len > 1000) {
+                            if (!DirectoryExists("avatars")) MakeDirectory("avatars");
+
+                            char filepath[128];
+                            snprintf(filepath, sizeof(filepath), "avatars/%ld.png", userId);
+
+                            FILE *f = fopen(filepath, "wb");
+                            if (f) {
+                                fwrite(png_data, 1, decoded_len, f);
+                                fclose(f);
+                                printf("[GET AVATAR] Saved %ld.png (%d bytes)\n", userId, decoded_len);
+                            }
+                            free(png_data);
+                            requestedAvatarUpdate = true;
+                        } else {
+                            printf("[GET AVATAR] Decode failed or too small (%d bytes)\n", decoded_len);
+                        }
+                    }
+                    requestedAvatarUpdate=true;
+                }
+
+                // moving the end
+                size_t processed_len = (newline + 1) - fullMessage;
+                memmove(fullMessage, newline + 1, totalReceived - processed_len);
+                totalReceived -= processed_len;
+                newline = strchr(fullMessage, '\n');
+            }
+        }
     return NULL;
 }
 bool initNetwork(void) {
@@ -479,15 +468,19 @@ bool initNetwork(void) {
     return true;
 }
 void sendMessage(const char *message) {
-    if (!connected) {
+    if (!connected || sock <= 0) {
         if (!initNetwork()) return;
     }
-    if (send(sock, message, strlen(message), 0) < 0) {
-        printf("[NETWORK] Error sending message: %s\n", message);
+
+    char packet[BUFFER_SIZE+1];
+    snprintf(packet, sizeof(packet), "%s\n", message);
+
+    if (send(sock, packet, strlen(packet), 0) < 0) {
+        printf("[NETWORK] Send error\n");
         connected = false;
     } else {
-        printf("[NETWORK] Sent successfully: %s\n", message);
-        finishedResponse=false;
+        printf("[NETWORK] Sent: %s\n", message);
+        usleep(5000);
     }
 }
 
@@ -783,7 +776,7 @@ int main(void) {
         config.isFirstUsed=true;
     } else {
         char message[27] = {0};
-        sprintf(message, "getFriendsList/%ld/", config.userId);
+        sprintf(message, "getFriendsList/%ld", config.userId);
         sendMessage(message);
     }
 
@@ -951,7 +944,7 @@ int main(void) {
                             FILE *f = fopen(savePath, "rb");
                             if (f) {
                                 fseek(f, 0, SEEK_END);
-                                long fileSize = ftell(f);
+                                int fileSize = ftell(f);
                                 fseek(f, 0, SEEK_SET);
 
                                 unsigned char *pngData = malloc(fileSize);
@@ -1014,7 +1007,6 @@ int main(void) {
             if (GuiButton((Rectangle){1141, 839, 160, 60}, "Отправить") || IsKeyPressed(KEY_ENTER)) {
                 if (strlen(message) != 0) {
                     sendMessage("createId/message");
-                    if (!finishedResponse) usleep(1000);
                     message[2048]='\0';
                     char parsed[BUFFER_SIZE] = {0};
                     snprintf(parsed, sizeof(parsed), "receive-message/%ld\x1E%ld\x1E%ld\x1E%s", randomId, config.userId, currentFriendId, message);
@@ -1057,7 +1049,6 @@ int main(void) {
 
                     char parsed[64] = {0};
                     snprintf(parsed, sizeof(parsed), "addFriend/%ld\x1E%ld", config.userId, targetId);
-
                     printf("[SEND FRIEND REQUEST] Sent request for %ld: %s\n", targetId, parsed);
                     sendMessage(parsed);
 
