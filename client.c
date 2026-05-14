@@ -134,7 +134,7 @@ static int sock = -1;
 static struct sockaddr_in serv_addr;
 bool connected = false;
 
-//void sendMessage(const char *message);
+void sendMessage(const char *message);
 void* recieveMessage(void* arg) {
     char localBuf[BUFFER_SIZE];
     char fullMessage[132000];  // large buffer
@@ -412,7 +412,6 @@ void* recieveMessage(void* arg) {
                 else if (strncmp(localBuf, "updateClient/friendRequests", 27) == 0) {
                     printf("[FRIEND REQUESTS] Received pending requests\n");
 
-                    // clearing past list
                     memset(pendingFriends, 0, sizeof(pendingFriends));
                     for (int i=0; i<100; i++) {
                         if (pendingFriendAvatarArr[i].id != 0) {
@@ -420,6 +419,7 @@ void* recieveMessage(void* arg) {
                             pendingFriendAvatarArr[i].id = 0;
                         }
                     }
+                    hasFriendRequests = false;
 
                     char *ptr = fullMessage+28;
                     char *saveptr = nullptr;
@@ -486,6 +486,15 @@ void* recieveMessage(void* arg) {
                         }
                     }
                     requestedAvatarUpdate=true;
+                }
+                else if (strncmp(fullMessage, "requestFriendUpdate/", 20) == 0) {
+                    char req[31] = {0};
+                    snprintf(req, 30, "getFriendsList/%ld", config.userId);
+                    sendMessage(req);
+                    memset(req, 0, 31);
+                    snprintf(req, 30, "updateClient/%ld", config.userId);
+                    sendMessage(req);
+                    continue;
                 }
 
                 // moving the end
@@ -861,7 +870,7 @@ int main(void) {
     char newDesc[1025] = "";
     char message[2049] = "";
     bool isAddingFriend = false;
-    char userId[10] = "";
+    char userId[11] = "";
     static Texture2D userAvatarTexture = {0};
     static char avatarPathInput[512] = {0};
     if (strlen(config.avatarUrl) != 0) {
@@ -942,6 +951,7 @@ int main(void) {
                     config.isFirstUsed = true;
                     continue;
                 }
+                memset(config.avatarUrl, 0, MAX_AVATAR);
                 strncpy(config.avatarUrl, "null", 4);
                 if (strlen(config.avatarUrl)==0) strncpy(config.avatarUrl, "null", 4);
 
@@ -967,7 +977,7 @@ int main(void) {
                                (Vector2){0, 0}, 0.0f, WHITE);
             } else {
                 DrawRectangleLinesEx(avatarRect, 4, LIGHTGRAY);
-                DrawTextEx(font, "нет\nаватарки", (Vector2){1333, 800}, 24, 2, GRAY);
+                DrawTextEx(font, "нет\nаватарки", (Vector2){1333, 82}, 24, 2, GRAY);
             }
             DrawTextEx(font, TextFormat("%s", config.userName), (Vector2){1320, 200}, 24, 1.0f, WHITE);
             Rectangle textBounds = { 1326, 278, 248, 388 };
@@ -979,7 +989,7 @@ int main(void) {
             GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
             if (GuiButton((Rectangle){1320, 230, 250, 30}, "скопировать код дружбы")) {
                 char copyToClipboard[11];
-                snprintf(copyToClipboard, 11, "%ld", config.userId);
+                snprintf(copyToClipboard, 10, "%ld", config.userId);
                 SetClipboardText(copyToClipboard);
             }
             GuiSetStyle(DEFAULT, TEXT_SIZE, 24);
@@ -1291,24 +1301,16 @@ int main(void) {
                 DrawRectangleLines(1600/2-200, 900/2-200, 400, 400, WHITE);
                 DrawRectangleLines(1600/2-190, 900/2-140, 381, 61, WHITE);
                 DrawTextEx(font, "Введи код дружбы:", (Vector2){1600/2-190, 900/2-180}, 20, 2, WHITE);
-                if (GuiTextBox((Rectangle){1600/2-190, 900/2-140, 380, 60}, userId, 10, activeField==6)) {
+                if (GuiTextBox((Rectangle){1600/2-190, 900/2-140, 380, 60}, userId, 11, activeField==6)) {
                     activeField = (activeField == 6) ? -1 : 6;
                 }
                 if (GuiButton((Rectangle){1600/2+66, 900/2+156, 130, 40}, "Отправить")) {
                     if (strlen(userId) == 0) continue;
 
-                    long targetId = strtol(userId, nullptr, 10);
-                    if (targetId <= 0) {
-                        printf("[SEND FRIEND REQUEST] Bad ID\n");
-                        continue;
-                    }
-
-                    char parsed[64] = {0};
-                    snprintf(parsed, sizeof(parsed), "addFriend/%ld\x1E%ld", config.userId, targetId);
-                    printf("[SEND FRIEND REQUEST] Sent request for %ld: %s\n", targetId, parsed);
+                    char parsed[32] = {0};
+                    snprintf(parsed, sizeof(parsed), "addFriend/%ld\x1E%s", config.userId, userId);
+                    printf("[SEND FRIEND REQUEST] Sent request for %s: %s\n", userId, parsed);
                     sendMessage(parsed);
-
-                    isAddingFriend = false;
                 }
                 if (GuiButton((Rectangle){1600/2-196, 900/2+156, 130, 40}, "Принять")) {
                     if (strlen(userId) > 0) {
@@ -1322,12 +1324,35 @@ int main(void) {
                         char req[64];
                         snprintf(req, sizeof(req), "getFriendsList/%ld", config.userId);
                         sendMessage(req);
+
+                        for (int i=0; i<100 && pendingFriends[i].userId!=0; i++) {
+                            char id[11] = {0};
+                            snprintf(id, 10, "%ld", pendingFriends[i].userId);
+                            if (strncmp(userId, id, 10) == 0) {
+                                pendingFriends[i].userId = 0L;
+                                memset(pendingFriends[i].avatarUrl, 0, sizeof(pendingFriends[i].avatarUrl));
+                                memset(pendingFriends[i].name, 0, sizeof(pendingFriends[i].name));
+                                memset(pendingFriends[i].profileDescription, 0, sizeof(pendingFriends[i].profileDescription));
+                                memset(userId, 0, 11);
+                            }
+                        }
                     }
                 }
 
-                float startY = 900/2.0f + 220;
-                for (int i=0; i<100 && pendingFriends[i].userId != 0; i++) {
-                    Rectangle avatarRect2 = { 1600/2-170, startY + 8, 54, 54 };
+                float startY = 900/2.0f -70;
+                for (int i=0; i<100 && pendingFriends[i].userId!=0; i++) {
+                    Rectangle friendRect = {1600/2-190, startY, 380, 68};
+                    DrawRectangleLines(1600/2-189, startY+1, 378, 66, GRAY);
+                    Rectangle avatarRect2 = { 1600/2-184, startY + 8, 54, 54 };
+
+                    if (CheckCollisionPointRec(GetMousePosition(), friendRect)) {
+                        DrawRectangleRec(friendRect, (Color){60, 60, 70, 255});
+                        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                            snprintf(userId, 10, "%ld", pendingFriends[i].userId);
+                        }
+                    } else {
+                        DrawRectangleRec(friendRect, (Color){50, 50, 60, 255});
+                    }
 
                     if (pendingFriendAvatarArr[i].id != 0) {
                         DrawTexturePro(pendingFriendAvatarArr[i],
@@ -1335,18 +1360,17 @@ int main(void) {
                                        avatarRect2,
                                        (Vector2){0, 0}, 0.0f, WHITE);
                     } else {
-                        DrawRectangleRec(avatarRect2, DARKGRAY);
+                        DrawRectangleRec(avatarRect2, GRAY);
                     }
                     DrawRectangleLinesEx(avatarRect2, 2, LIGHTGRAY);
-
-                    DrawTextEx(font, pendingFriends[i].name, (Vector2){1600/2-175 + 70, startY + 12}, 24, 2, WHITE);
+                    DrawTextEx(font, pendingFriends[i].name, (Vector2){1600/2-190 + 70, startY + 12}, 24, 2, WHITE);
 
                     if (strlen(pendingFriends[i].profileDescription) > 0) {
                         char shortDesc[80];
                         strncpy(shortDesc, pendingFriends[i].profileDescription, 70);
                         shortDesc[70] = '\0';
                         if (strlen(pendingFriends[i].profileDescription) > 70) strcat(shortDesc, "...");
-                        DrawTextEx(font, shortDesc, (Vector2){1600/2-175 + 70, startY + 42}, 18, 2, LIGHTGRAY);
+                        DrawTextEx(font, shortDesc, (Vector2){1600/2-190 + 70, startY + 42}, 18, 2, LIGHTGRAY);
                     }
 
                     startY += 80;

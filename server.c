@@ -163,7 +163,7 @@ void getClientUpdates(long userId, int sock) {
             return;
         }
         int offset = 0;
-        offset += snprintf(response+offset, sizeof(response) - offset, "updateClient/messages\x1E");
+        offset += snprintf(response+offset, size-offset, "updateClient/messages\x1E");
 
         char query[512];
         snprintf(query, sizeof(query),
@@ -184,21 +184,22 @@ void getClientUpdates(long userId, int sock) {
                     int count = atoi(row[1]);
                     totalNew += count;
 
-                    messageOffset += snprintf(message + messageOffset, sizeof(message) - messageOffset,
+                    messageOffset += snprintf(message+messageOffset, size-messageOffset,
                                       "%ld\x1F%d\x1E", sender, count);
                 }
                 mysql_free_result(res);
 
-                offset += snprintf(response+offset, sizeof(response)-offset,
+                offset += snprintf(response+offset, size-offset,
                                  "%d\x1E%s", totalNew, message);
             } else {
-                offset += snprintf(response+offset, sizeof(response)-offset, "0\x1E");
+                offset += snprintf(response+offset, size-offset, "0\x1E");
             }
         } else {
-            offset += snprintf(response+offset, sizeof(response)-offset, "0\x1E");
+            offset += snprintf(response+offset, size-offset, "0\x1E");
         }
         response[++offset] = '\0';
         sendPacket(sock, response);
+        printf("[GET CLIENT UPDATES] Sent messages update for %ld: %s\n", userId, response);
         free(response);
     }
 
@@ -213,7 +214,7 @@ void getClientUpdates(long userId, int sock) {
             return;
         }
         int offset = 0;
-        offset += snprintf(response+offset, sizeof(response) - offset, "updateClient/friendRequests\x1E");
+        offset += snprintf(response+offset, size-offset, "updateClient/friendRequests\x1E");
 
         char query[512];
         snprintf(query, sizeof(query),
@@ -231,34 +232,36 @@ void getClientUpdates(long userId, int sock) {
                 int messageOffset = 0;
 
                 while ((row = mysql_fetch_row(res))) {
-                    messageOffset += snprintf(message + messageOffset, sizeof(message) - messageOffset,
-                        "%s\x1F%s\x1F%s\x1F%s\x1F%s\x1E",
-                        row[0],                    // fr.id
-                        row[1],                    // fr.senderId
-                        row[2],                    // username
-                        row[3] ? row[3] : ""       // profileDesc
-                        );
+                    messageOffset += snprintf(message+messageOffset, size-messageOffset,
+                        "%s\x1F%s\x1F%s\x1F%s\x1F%s\x1E",   // id, senderId, username, profileDesc, avatarUrl
+                        row[0] ? row[0] : "0",
+                        row[1] ? row[1] : "0",
+                        row[2] ? row[2] : "",
+                        row[3] ? row[3] : "",
+                        ""
+                    );
                 }
                 mysql_free_result(res);
 
-                int tempOffset = snprintf(response+offset, sizeof(response)-offset, "%s", message);
+                int tempOffset = snprintf(response+offset, size-offset, "%s", message);
                 if (tempOffset+offset > size) {
                     size+=2560;
                     char *newServerResponce = realloc(response, size);
                     if (newServerResponce) {
                         response=newServerResponce;
-                        snprintf(response+offset, sizeof(response)-offset, "%s", message);
+                        snprintf(response+offset, size-offset, "%s", message);
                     }
                 }
                 offset+=tempOffset;
             } else {
-                offset += snprintf(response+offset, sizeof(response)-offset, "0");
+                offset += snprintf(response+offset, size-offset, "0\x1E");
             }
         } else {
-            offset += snprintf(response+offset, sizeof(response)-offset, "0");
+            offset += snprintf(response+offset, size-offset, "0\x1E");
         }
         response[++offset] = '\0';
         sendPacket(sock, response);
+        printf("[GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", userId, response);
         free(response);
     }
 }
@@ -427,32 +430,27 @@ void getFriends(long userId, int sock) {
 // }
 
 bool sendFriendRequest(long senderId, long receiverId) {
-    if (senderId == receiverId) {
-        printf("[SEND FRIEND REQUEST] Can't add yourself\n");
-        return false;
-    }
+    if (senderId == receiverId) return false;
 
-    char check[256];
-    snprintf(check, sizeof(check),
-             "SELECT 1 FROM users WHERE userId = %ld", receiverId);
-
-    if (mysql_query(conn, check) == 0) {
+    char query[256];
+    snprintf(query, sizeof(query), "SELECT 1 FROM users WHERE userId = %ld", receiverId);
+    if (mysql_query(conn, query) == 0) {
         MYSQL_RES *res = mysql_store_result(conn);
         if (res && mysql_num_rows(res) == 0) {
             mysql_free_result(res);
-            printf("[SEND FRIEND REQUEST] %ld doesn't exist\n", receiverId);
+            printf("[SEND FRIEND REQUEST] User %ld doesn't exist\n", receiverId);
             return false;
         }
         if (res) mysql_free_result(res);
     }
 
-    char query[512];
-    snprintf(query, sizeof(query),
+    char query2[512];
+    snprintf(query2, sizeof(query2),
         "INSERT INTO friend_requests (senderId, receiverId) "
         "VALUES (%ld, %ld) ON DUPLICATE KEY UPDATE status='pending'",
         senderId, receiverId);
 
-    if (mysql_query(conn, query)) {
+    if (mysql_query(conn, query2)) {
         printf("[SEND FRIEND REQUEST] Query error: %s\n", mysql_error(conn));
         return false;
     }
@@ -462,21 +460,33 @@ bool sendFriendRequest(long senderId, long receiverId) {
 }
 
 bool acceptFriendRequest(long receiverId, long senderId) {
-    // changing status
-    char query[512];
+    if (receiverId == senderId) return false;
+    char query[1024];
+
+    // updating request
     snprintf(query, sizeof(query),
         "UPDATE friend_requests SET status='accepted' "
-        "WHERE senderId=%ld AND receiverId=%ld AND status='pending'",
+        "WHERE senderId = %ld AND receiverId = %ld AND status = 'pending'",
         senderId, receiverId);
 
-    if (mysql_query(conn, query)) return false;
+    if (mysql_query(conn, query)) {
+        printf("[ACCEPT FRIEND] Update error: %s\n", mysql_error(conn));
+        return false;
+    }
 
-    // two-way friendship
+    // linking both sides
     snprintf(query, sizeof(query),
-        "INSERT IGNORE INTO friends (userId, relatedUserId) VALUES (%ld, %ld), (%ld, %ld)",
-        senderId, receiverId, receiverId, senderId);
+        "INSERT IGNORE INTO friends (userId, relatedUserId) "
+        "VALUES (%ld, %ld), (%ld, %ld)",
+        receiverId, senderId, senderId, receiverId);
 
-    return mysql_query(conn, query) == 0;
+    if (mysql_query(conn, query)) {
+        printf("[ACCEPT FRIEND] Insert friends error: %s\n", mysql_error(conn));
+        return false;
+    }
+
+    printf("[ACCEPT FRIEND] SUCCESS: %ld <-> %ld\n", receiverId, senderId);
+    return true;
 }
 
 char* Base64Encode(const unsigned char* input, int length) {
@@ -590,14 +600,16 @@ void* acceptMessage(void *arg) {
             }
         }
         else if (strncmp(fullMessage, "createId/user", 13) == 0) {
-            srand(time(nullptr) + clock());
-            long id = rand()%2147483647;
+            srand(time(NULL) ^ clock());
+            // generating 10-digit number from 1000000000 to 9999999999
+            long id = 1000000000L + (rand() % 9000000000L);
             sprintf(response, "createId/user/%ld\n", id);
             printf("[CREATE USER ID] New Id generated for user: %ld\n", id);
         }
         else if (strncmp(fullMessage, "createId/message", 16) == 0) {
-            srand(time(nullptr) + clock());
-            long id = rand()%2147483647;
+            srand(time(NULL) ^ clock());
+            // generating 10-digit number from 1000000000 to 9999999999
+            long id = 1000000000L + (rand() % 9000000000L);
             sprintf(response, "createId/message/%ld\n", id);
             printf("[CREATE MESSAGE ID] New Id generated for message: %ld\n", id);
         }
@@ -630,74 +642,32 @@ void* acceptMessage(void *arg) {
         }
         else if (strncmp(fullMessage, "getFriendsList/", 15) == 0) {
             long userId = strtol(fullMessage + 15, nullptr, 10);
-            printf("[GET FRIENDS LIST] received for %ld\n", userId);
-            if (userId > 0) {
-                int offset = snprintf(response, sizeof(response), "getFriendsList/%ld\x1E", userId);
+            if (userId <= 0) continue;
+            int offset = snprintf(response, sizeof(response), "getFriendsList/%ld\x1E", userId);
 
-                // getting relatedUserId
-                char query[512];
-                snprintf(query, sizeof(query),
-                         "SELECT relatedUserId FROM friends WHERE userId = %ld", userId);
+            char query[512];
+            snprintf(query, sizeof(query),
+                "SELECT u.userId, u.username, u.avatarUrl, u.profileDesc "
+                "FROM friends f "
+                "JOIN users u ON f.relatedUserId = u.userId "
+                "WHERE f.userId = %ld", userId);
 
-                if (mysql_query(conn, query)) {
-                    printf("[GET FRIENDS LIST] Failed to query friends for user %ld\n", userId);
-                    memset(response, 0, sizeof(response));
-                    strncpy(response, "getFriendList/error", 23);
-                    sendPacket(sock, response);
-                    continue;
-                }
-
+            if (mysql_query(conn, query) == 0) {
                 MYSQL_RES *res = mysql_store_result(conn);
-                if (res == NULL) {
-                    memset(response, 0, sizeof(response));
-                    strncpy(response, "getFriendList/empty", 23);
-                    sendPacket(sock, response);
-                    continue;
-                }
-
-                int friends = 0;
-                MYSQL_ROW row;
-                while ((row = mysql_fetch_row(res))) {
-                    if (row[0] == NULL) continue;
-
-                    long friend_id = strtol(row[0], nullptr, 10);
-                    if (friend_id <= 0) continue;
-
-                    // requesting data
-                    snprintf(query, sizeof(query),
-                             "SELECT username, avatarUrl, profileDesc "
-                             "FROM users WHERE userId = %ld", friend_id);
-
-                    if (mysql_query(conn, query) == 0) {
-                        MYSQL_RES *fres = mysql_store_result(conn);
-                        if (fres) {
-                            MYSQL_ROW frow = mysql_fetch_row(fres);
-                            if (frow && frow[0]) {
-                                offset += snprintf(response + offset, sizeof(response) - offset,
-                                    "%s\x1F%ld\x1F%s\x1F%s\x1E",
-                                    frow[0],                    // username
-                                    friend_id,
-                                    frow[1] ? frow[1] : "",     // avatarUrl
-                                    frow[2] ? frow[2] : "");    // profileDesc
-                                friends++;
-                            }
-                            mysql_free_result(fres);
-                        }
+                if (res) {
+                    MYSQL_ROW row;
+                    while ((row = mysql_fetch_row(res))) {
+                        offset += snprintf(response + offset, sizeof(response) - offset,
+                            "%s\x1F%ld\x1F%s\x1F%s\x1E",
+                            row[1], strtol(row[0], nullptr, 10),
+                            row[2] ? row[2] : "", row[3] ? row[3] : "");
                     }
-                }
-                mysql_free_result(res);
-
-                // sending result
-                if (offset > 15) {   // if there is atleast one friend
-                    response[++offset] = '\0';
-                    sendPacket(sock, response);
-                    printf("[GET FRIENDS LIST] Sent %zu bytes for user %ld (%d friends)\n", strlen(response), userId, friends);
-                } else {
-                    memset(response, 0, sizeof(response));
-                    strncpy(response, "getFriendList/empty", 23);
-                    sendPacket(sock, response);
+                    mysql_free_result(res);
                 }
             }
+
+            sendPacket(sock, response);
+            printf("[GET FRIENDS LIST] Sent for %ld\n", userId);
         }
         else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
             char *parts[2] = {0};
@@ -715,7 +685,11 @@ void* acceptMessage(void *arg) {
 
                 if (senderId > 0 && receiverId > 0) {
                     if (sendFriendRequest(senderId, receiverId)) {
+                        sendPacket(sock, "requestFriendUpdate/");
                         printf("[ADD FRIEND] Sent successfully %ld -> %ld\n", senderId, receiverId);
+                        char notify[128];
+                        snprintf(notify, sizeof(notify), "requestFriendUpdate/");
+                        pushToUser(senderId, notify);
                     } else {
                         printf("[ADD FRIEND] Failed to save request\n");
                         strncpy(response, "addFriend/error\n", 16);
@@ -743,14 +717,20 @@ void* acceptMessage(void *arg) {
                 long senderId   = strtol(parts[1], nullptr, 10);
 
                 if (acceptFriendRequest(receiverId, senderId)) {
-                    printf("[ACCEPT FRIEND] %ld accepted request from %ld\n", receiverId, senderId);
+                    // updating both clients
+                    pushToUser(senderId, "requestFriendUpdate/");
+                    pushToUser(receiverId, "requestFriendUpdate/");
 
-                    char friendsListCmd[64];
-                    snprintf(friendsListCmd, sizeof(friendsListCmd), "getFriendsList/%ld", receiverId);
+                    char updateCmd[64];
+                    snprintf(updateCmd, sizeof(updateCmd), "updateClient/%ld", receiverId);
+                    pushToUser(receiverId, updateCmd);
+
+                    printf(BGREEN "[ACCEPT FRIEND] SUCCESS + notifications sent to both\n" RESET);
                 } else {
-                    printf("[ACCEPT FRIEND] failed to add friend %ld -> %ld\n", senderId, receiverId);
-                    strncpy(response, "acceptFriend/error\n", 19);
+                    sendPacket(sock, "acceptFriend/error");
                 }
+            } else {
+                sendPacket(sock, "acceptFriend/badformat");
             }
         }
         else if (strncmp(fullMessage, "updateClient/", 13) == 0) {
@@ -921,8 +901,8 @@ int main(void) {
             "id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,"
             "senderId BIGINT UNSIGNED NOT NULL,"
             "receiverId BIGINT UNSIGNED NOT NULL,"
-            "status ENUM('pending', 'accepted', 'rejected') NOT NULL DEFAULT 'pending',"
-            "createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            "status ENUM('pending', 'accepted', 'rejected') DEFAULT 'pending',"
+            "createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,"
             "UNIQUE KEY unique_request (senderId, receiverId),"
             "FOREIGN KEY (senderId) REFERENCES users(userId) ON DELETE CASCADE,"
             "FOREIGN KEY (receiverId) REFERENCES users(userId) ON DELETE CASCADE"
