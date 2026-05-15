@@ -1,6 +1,8 @@
 # UnChat
 This is yet another chat project made for practide and fun. **Maaaaybeeee** sometimes it will grow to serious, big, enterprise-level project. All you can do now is just use it and report bugs to improve whatever its called. Enjoy :3
+
 ---
+
 ### Server setup:
 You will need:
 - Any VPS/VDS on Ubuntu/Debian
