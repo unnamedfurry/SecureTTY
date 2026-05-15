@@ -870,7 +870,7 @@ int main(void) {
     char newDesc[1025] = "";
     char message[2049] = "";
     bool isAddingFriend = false;
-    char userId[11] = "";
+    char userId[13] = "";
     static Texture2D userAvatarTexture = {0};
     static char avatarPathInput[512] = {0};
     if (strlen(config.avatarUrl) != 0) {
@@ -988,8 +988,8 @@ int main(void) {
             }
             GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
             if (GuiButton((Rectangle){1320, 230, 250, 30}, "скопировать код дружбы")) {
-                char copyToClipboard[11];
-                snprintf(copyToClipboard, 10, "%ld", config.userId);
+                char copyToClipboard[13];
+                snprintf(copyToClipboard, 12, "%ld", config.userId);
                 SetClipboardText(copyToClipboard);
             }
             GuiSetStyle(DEFAULT, TEXT_SIZE, 24);
@@ -1301,13 +1301,13 @@ int main(void) {
                 DrawRectangleLines(1600/2-200, 900/2-200, 400, 400, WHITE);
                 DrawRectangleLines(1600/2-190, 900/2-140, 381, 61, WHITE);
                 DrawTextEx(font, "Введи код дружбы:", (Vector2){1600/2-190, 900/2-180}, 20, 2, WHITE);
-                if (GuiTextBox((Rectangle){1600/2-190, 900/2-140, 380, 60}, userId, 11, activeField==6)) {
+                if (GuiTextBox((Rectangle){1600/2-190, 900/2-140, 380, 60}, userId, 12, activeField==6)) {
                     activeField = (activeField == 6) ? -1 : 6;
                 }
                 if (GuiButton((Rectangle){1600/2+66, 900/2+156, 130, 40}, "Отправить")) {
                     if (strlen(userId) == 0) continue;
 
-                    char parsed[32] = {0};
+                    char parsed[35] = {0};
                     snprintf(parsed, sizeof(parsed), "addFriend/%ld\x1E%s", config.userId, userId);
                     printf("[SEND FRIEND REQUEST] Sent request for %s: %s\n", userId, parsed);
                     sendMessage(parsed);
@@ -1326,8 +1326,8 @@ int main(void) {
                         sendMessage(req);
 
                         for (int i=0; i<100 && pendingFriends[i].userId!=0; i++) {
-                            char id[11] = {0};
-                            snprintf(id, 10, "%ld", pendingFriends[i].userId);
+                            char id[13] = {0};
+                            snprintf(id, 12, "%ld", pendingFriends[i].userId);
                             if (strncmp(userId, id, 10) == 0) {
                                 pendingFriends[i].userId = 0L;
                                 memset(pendingFriends[i].avatarUrl, 0, sizeof(pendingFriends[i].avatarUrl));

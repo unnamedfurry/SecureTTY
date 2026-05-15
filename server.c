@@ -349,7 +349,6 @@ bool saveUserToDB(long userId, const char *username, const char *email,
     mysql_real_escape_string(conn, esc_desc,     profileDesc, strlen(profileDesc));
 
     char query[8192];
-
     int written = snprintf(query, sizeof(query),
         "INSERT INTO users (userId, username, email, passwordHash, avatarUrl, profileDesc) "
         "VALUES (%ld, '%s', '%s', '%s', '%s', '%s') "
@@ -367,12 +366,12 @@ bool saveUserToDB(long userId, const char *username, const char *email,
         esc_desc);
 
     if (written < 0 || written >= sizeof(query)) {
-        fprintf(stderr, "\n[SAVE USER TO DB] Query buffer too small, needed %d bytes", written);
+        printf("[SAVE USER TO DB] Query buffer too small, needed %d bytes\n", written);
         return false;
     }
 
     if (mysql_query(conn, query)) {
-        fprintf(stderr, "\n[SAVE USER TO DB] Error: %s", mysql_error(conn));
+        printf("[SAVE USER TO DB] users table error: %s\n", mysql_error(conn));
         return false;
     }
 
@@ -430,27 +429,32 @@ void getFriends(long userId, int sock) {
 // }
 
 bool sendFriendRequest(long senderId, long receiverId) {
-    if (senderId == receiverId) return false;
+    if (senderId == receiverId) {
+        printf("[SEND FRIEND REQUEST] Can't add yourself\n");
+        return false;
+    }
 
-    char query[256];
-    snprintf(query, sizeof(query), "SELECT 1 FROM users WHERE userId = %ld", receiverId);
-    if (mysql_query(conn, query) == 0) {
+    char check[256];
+    snprintf(check, sizeof(check),
+             "SELECT 1 FROM users WHERE userId = %ld", receiverId);
+
+    if (mysql_query(conn, check) == 0) {
         MYSQL_RES *res = mysql_store_result(conn);
         if (res && mysql_num_rows(res) == 0) {
             mysql_free_result(res);
-            printf("[SEND FRIEND REQUEST] User %ld doesn't exist\n", receiverId);
+            printf("[SEND FRIEND REQUEST] %ld doesn't exist\n", receiverId);
             return false;
         }
         if (res) mysql_free_result(res);
     }
 
-    char query2[512];
-    snprintf(query2, sizeof(query2),
+    char query[512];
+    snprintf(query, sizeof(query),
         "INSERT INTO friend_requests (senderId, receiverId) "
         "VALUES (%ld, %ld) ON DUPLICATE KEY UPDATE status='pending'",
         senderId, receiverId);
 
-    if (mysql_query(conn, query2)) {
+    if (mysql_query(conn, query)) {
         printf("[SEND FRIEND REQUEST] Query error: %s\n", mysql_error(conn));
         return false;
     }
@@ -460,13 +464,11 @@ bool sendFriendRequest(long senderId, long receiverId) {
 }
 
 bool acceptFriendRequest(long receiverId, long senderId) {
-    if (receiverId == senderId) return false;
-    char query[1024];
-
-    // updating request
+    // changing status
+    char query[512];
     snprintf(query, sizeof(query),
         "UPDATE friend_requests SET status='accepted' "
-        "WHERE senderId = %ld AND receiverId = %ld AND status = 'pending'",
+        "WHERE senderId=%ld AND receiverId=%ld AND status='pending'",
         senderId, receiverId);
 
     if (mysql_query(conn, query)) {
@@ -474,18 +476,15 @@ bool acceptFriendRequest(long receiverId, long senderId) {
         return false;
     }
 
-    // linking both sides
+    // one-way friendship request
     snprintf(query, sizeof(query),
-        "INSERT IGNORE INTO friends (userId, relatedUserId) "
-        "VALUES (%ld, %ld), (%ld, %ld)",
-        receiverId, senderId, senderId, receiverId);
+        "INSERT IGNORE INTO friends (userId, relatedUserId) VALUES (%ld, %ld), (%ld, %ld)",
+        senderId, receiverId, receiverId, senderId);
 
     if (mysql_query(conn, query)) {
         printf("[ACCEPT FRIEND] Insert friends error: %s\n", mysql_error(conn));
         return false;
     }
-
-    printf("[ACCEPT FRIEND] SUCCESS: %ld <-> %ld\n", receiverId, senderId);
     return true;
 }
 
@@ -645,29 +644,67 @@ void* acceptMessage(void *arg) {
             if (userId <= 0) continue;
             int offset = snprintf(response, sizeof(response), "getFriendsList/%ld\x1E", userId);
 
+            // getting relatedUserId
             char query[512];
             snprintf(query, sizeof(query),
-                "SELECT u.userId, u.username, u.avatarUrl, u.profileDesc "
-                "FROM friends f "
-                "JOIN users u ON f.relatedUserId = u.userId "
-                "WHERE f.userId = %ld", userId);
+                     "SELECT receiverId FROM friend_requests WHERE senderId = %ld", userId);
 
-            if (mysql_query(conn, query) == 0) {
-                MYSQL_RES *res = mysql_store_result(conn);
-                if (res) {
-                    MYSQL_ROW row;
-                    while ((row = mysql_fetch_row(res))) {
-                        offset += snprintf(response + offset, sizeof(response) - offset,
-                            "%s\x1F%ld\x1F%s\x1F%s\x1E",
-                            row[1], strtol(row[0], nullptr, 10),
-                            row[2] ? row[2] : "", row[3] ? row[3] : "");
-                    }
-                    mysql_free_result(res);
-                }
+            if (mysql_query(conn, query)) {
+                printf("[GET FRIEND LIST] Failed to query friends for user %ld: %s\n", userId, mysql_error(conn));
+                response[++offset] = '\0';
+                snprintf(response, sizeof(response), "getFriendList/error");
+                sendPacket(sock, response);
+                continue;
             }
 
-            sendPacket(sock, response);
-            printf("[GET FRIENDS LIST] Sent for %ld\n", userId);
+            MYSQL_RES *res = mysql_store_result(conn);
+            if (res == NULL) {
+                response[++offset] = '\0';
+                snprintf(response, sizeof(response), "getFriendList/empty");
+                sendPacket(sock, response);
+                continue;
+            }
+
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(res))) {
+                if (row[0] == NULL) continue;
+
+                long friend_id = strtol(row[0], nullptr, 10);
+                if (friend_id <= 0) continue;
+
+                // requesting data
+                snprintf(query, sizeof(query),
+                         "SELECT username, avatarUrl, profileDesc "
+                         "FROM users WHERE userId = %ld", friend_id);
+
+                if (mysql_query(conn, query) == 0) {
+                    MYSQL_RES *fres = mysql_store_result(conn);
+                    if (fres) {
+                        MYSQL_ROW frow = mysql_fetch_row(fres);
+                        if (frow && frow[0]) {
+                            offset += snprintf(response + offset, sizeof(response) - offset,
+                                "%s\x1F%ld\x1F%s\x1F%s\x1E",
+                                frow[0],                    // username
+                                friend_id,
+                                frow[1] ? frow[1] : "",     // avatarUrl
+                                frow[2] ? frow[2] : "");    // profileDesc
+                        }
+                        mysql_free_result(fres);
+                    }
+                }
+            }
+            mysql_free_result(res);
+
+            // sending result
+            if (offset > 15) {   // if there is atleast one friend
+                response[++offset] = '\0';
+                sendPacket(sock, response);
+                printf("[GET FRIENDS LIST] Sent for %ld\n", userId);
+            } else {
+                response[++offset] = '\0';
+                snprintf(response, sizeof(response), "getFriendList/empty");
+                sendPacket(sock, response);
+            }
         }
         else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
             char *parts[2] = {0};
@@ -724,8 +761,6 @@ void* acceptMessage(void *arg) {
                     char updateCmd[64];
                     snprintf(updateCmd, sizeof(updateCmd), "updateClient/%ld", receiverId);
                     pushToUser(receiverId, updateCmd);
-
-                    printf(BGREEN "[ACCEPT FRIEND] SUCCESS + notifications sent to both\n" RESET);
                 } else {
                     sendPacket(sock, "acceptFriend/error");
                 }
