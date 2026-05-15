@@ -16,6 +16,7 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
+#include "client.h"
 
 #define CONFIG_FILE "conf.txt"
 #define MAX_NAME 23
@@ -126,8 +127,6 @@ unsigned char* Base64Decode(const char* input, int* out_len) {
 //
 
 
-#define SERVER_IP "127.0.0.1"
-#define SERVER_PORT 63321
 #define BUFFER_SIZE 7097
 static pthread_t thread_id;
 static int sock = -1;

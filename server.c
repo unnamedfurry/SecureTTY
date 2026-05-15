@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <libgen.h>
+#include "server.h"
 
 #define RESET   "\033[0m"
 #define RED     "\033[31m"
@@ -468,7 +469,7 @@ bool acceptFriendRequest(long receiverId, long senderId) {
     char query[512];
     snprintf(query, sizeof(query),
         "UPDATE friend_requests SET status='accepted' "
-        "WHERE senderId=%ld AND receiverId=%ld AND status='pending'",
+        "WHERE senderId=%ld AND receiverId=%ld",
         senderId, receiverId);
 
     if (mysql_query(conn, query)) {
@@ -911,7 +912,8 @@ int main(void) {
     printf("[MYSQL] Connecting ro mysql\n");
     conn = mysql_init(nullptr);
 
-    if (mysql_real_connect(conn, "localhost", "root", "681137", "unchat", 0, nullptr, 0) == NULL) {
+    if (mysql_real_connect(conn, HOST, MYSQL_USER, MYSQL_PASSWORD, "unchat", 0, nullptr, 0) == NULL) {
+    //if (mysql_real_connect(conn, "localhost", "root", "681137", "unchat", 0, nullptr, 0) == NULL) {
         printf("[MYSQL] Failed to connect to database: %s\n", mysql_error(conn));
         mysql_close(conn);
         return 0;
