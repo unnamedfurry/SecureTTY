@@ -6,5 +6,5 @@
 #define UNCHAT_SERVER_H
 #define HOST "localhost"
 #define MYSQL_USER "root"
-#define MYSQL_PASSWORD ""
+#define MYSQL_PASSWORD "681137"
 #endif //UNCHAT_SERVER_H

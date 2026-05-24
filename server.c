@@ -15,6 +15,8 @@
 #include <libgen.h>
 #include "server.h"
 
+#include <errno.h>
+
 #define RESET   "\033[0m"
 #define RED     "\033[31m"
 #define GREEN   "\033[32m"
@@ -82,36 +84,59 @@ static ClientSession *activeClients = nullptr;
 static pthread_mutex_t clientsMutex = PTHREAD_MUTEX_INITIALIZER;
 
 bool sendPacket(int sock, const char *data) {
+    if (sock <= 0 || data == NULL) return false;
+
     char packet[132000];
-    snprintf(packet, sizeof(packet), "%s\n", data);
-    return send(sock, packet, strlen(packet), MSG_NOSIGNAL) > 0;
+    int len = snprintf(packet, sizeof(packet), "%s\n", data);
+    if (len < 0 || len >= (int)sizeof(packet)) {
+        printf("[SEND] Packet too big or error\n");
+        return false;
+    }
+
+    int sent = send(sock, packet, len, MSG_NOSIGNAL);
+    if (sent < 0) {
+        if (errno == EPIPE || errno == ECONNRESET) {
+            printf("[SEND] Client disconnected (sock=%d)\n", sock);
+        } else {
+            printf("[SEND] send() error: %s (sock=%d)\n", strerror(errno), sock);
+        }
+        return false;
+    }
+    return true;
 }
 // register client (after authorization)
 void registerClient(long userId, int sock) {
+    if (sock <= 0) return;
+
     pthread_mutex_lock(&clientsMutex);
 
-    // removing old
+    // removing old sessions
     ClientSession *curr = activeClients, *prev = nullptr;
     while (curr) {
         if (curr->userId == userId) {
-            close(curr->sock);
+            printf("[NETWORK] Replacing old session for user %ld (old sock=%d)\n", userId, curr->sock);
+            close(curr->sock);  // closing old
+
             if (prev) prev->next = curr->next;
             else activeClients = curr->next;
-            free(curr);
-            break;
+
+            ClientSession *tofree = curr;
+            curr = curr->next;
+            free(tofree);
+            continue;
         }
         prev = curr;
         curr = curr->next;
     }
 
-    // new
+    // adding new
     ClientSession *session = malloc(sizeof(ClientSession));
     session->userId = userId;
     session->sock = sock;
     session->next = activeClients;
     activeClients = session;
 
-    printf(YELLOW "[NETWORK] client connected: userId=%ld, sock=%d\n" RESET, userId, sock);
+    printf("[NETWORK] Client registered: userId=%ld, sock=%d\n", userId, sock);
     pthread_mutex_unlock(&clientsMutex);
 }
 
@@ -122,7 +147,7 @@ void unregisterClient(int sock) {
 
     while (curr) {
         if (curr->sock == sock) {
-            printf(YELLOW "[NETWORK] client disconnected: userId=%ld\n" RESET, curr->userId);
+            printf("[NETWORK] client disconnected: userId=%ld\n", curr->userId);
             if (prev) prev->next = curr->next;
             else activeClients = curr->next;
             free(curr);
@@ -136,20 +161,27 @@ void unregisterClient(int sock) {
 
 // sending messages to online client
 bool pushToUser(long userId, const char *data) {
-     pthread_mutex_lock(&clientsMutex);
-     ClientSession *curr = activeClients;
+    pthread_mutex_lock(&clientsMutex);
 
-     while (curr) {
-         if (curr->userId == userId) {
-             int sent = sendPacket(curr->sock, data);
-             pthread_mutex_unlock(&clientsMutex);
-             return sent > 0;
-         }
-         curr = curr->next;
-     }
+    ClientSession *curr = activeClients;
+    while (curr) {
+        if (curr->userId == userId) {
+            int sock = curr->sock;
+            pthread_mutex_unlock(&clientsMutex);   // releasing mutex before send
 
-     pthread_mutex_unlock(&clientsMutex);
-     return false; // client offline
+            bool ok = sendPacket(sock, data);
+
+            if (!ok) {
+                printf("[PUSH] Failed to send to user %ld (sock=%d). Will be cleaned on next read.\n", userId, sock);
+            }
+            return ok;
+        }
+        curr = curr->next;
+    }
+
+    pthread_mutex_unlock(&clientsMutex);
+    printf("[PUSH] User %ld offline\n", userId);
+    return false;
 }
 
 void getClientUpdates(long userId, int sock) {
@@ -435,57 +467,119 @@ bool sendFriendRequest(long senderId, long receiverId) {
         return false;
     }
 
+    // do both clients exist?
     char check[256];
-    snprintf(check, sizeof(check),
-             "SELECT 1 FROM users WHERE userId = %ld", receiverId);
+    snprintf(check, sizeof(check), "SELECT 1 FROM users WHERE userId = %ld", receiverId);
 
     if (mysql_query(conn, check) == 0) {
         MYSQL_RES *res = mysql_store_result(conn);
         if (res && mysql_num_rows(res) == 0) {
             mysql_free_result(res);
-            printf("[SEND FRIEND REQUEST] %ld doesn't exist\n", receiverId);
+            printf("[SEND] User %ld doesn't exist\n", receiverId);
             return false;
         }
-        if (res) mysql_free_result(res);
+        mysql_free_result(res);
     }
 
-    char query[512];
+    // avoid-mess-checks
+    char query[1024];
+
+    // 1 are we already friends now?
     snprintf(query, sizeof(query),
-        "INSERT INTO friend_requests (senderId, receiverId) "
-        "VALUES (%ld, %ld) ON DUPLICATE KEY UPDATE status='pending'",
+        "SELECT 1 FROM friends WHERE (userId = %ld AND relatedUserId = %ld) "
+        "OR (userId = %ld AND relatedUserId = %ld) LIMIT 1",
+        senderId, receiverId, receiverId, senderId);
+
+    if (mysql_query(conn, query) == 0) {
+        MYSQL_RES *res = mysql_store_result(conn);
+        if (res && mysql_num_rows(res) > 0) {
+            mysql_free_result(res);
+            printf("[SEND] Already friends: %ld <-> %ld\n", senderId, receiverId);
+            return false;
+        }
+        mysql_free_result(res);
+    }
+
+    // 2 do we have older requests?
+    snprintf(query, sizeof(query),
+        "SELECT senderId, status FROM friend_requests "
+        "WHERE (senderId = %ld AND receiverId = %ld) "
+        "   OR (senderId = %ld AND receiverId = %ld) "
+        "LIMIT 1",
+        senderId, receiverId, receiverId, senderId);
+
+    if (mysql_query(conn, query) == 0) {
+        MYSQL_RES *res = mysql_store_result(conn);
+        if (res && mysql_num_rows(res) > 0) {
+            MYSQL_ROW row = mysql_fetch_row(res);
+            long existing_sender = atoll(row[0]);
+            const char* status = row[1];
+
+            mysql_free_result(res);
+
+            if (strcmp(status, "accepted") == 0) {
+                printf("[SEND] Already friends (accepted request)\n");
+            } else if (existing_sender == senderId) {
+                printf("[SEND] Request already sent\n");
+            } else {
+                printf("[SEND] Request already received from the other side\n");
+            }
+            return false;
+        }
+        mysql_free_result(res);
+    }
+
+    // sending new request
+    snprintf(query, sizeof(query),
+        "INSERT INTO friend_requests (senderId, receiverId, status) "
+        "VALUES (%ld, %ld, 'pending') "
+        "ON DUPLICATE KEY UPDATE status='pending', createdAt=CURRENT_TIMESTAMP",
         senderId, receiverId);
 
     if (mysql_query(conn, query)) {
-        printf("[SEND FRIEND REQUEST] Query error: %s\n", mysql_error(conn));
+        printf("[SEND] DB error: %s\n", mysql_error(conn));
         return false;
     }
 
-    printf("[SEND FRIEND REQUEST] Friend request saved successfully in DB: %ld -> %ld\n", senderId, receiverId);
+    printf("[SEND FRIEND REQUEST] Success: %ld -> %ld\n", senderId, receiverId);
     return true;
 }
 
 bool acceptFriendRequest(long receiverId, long senderId) {
-    // changing status
-    char query[512];
+    char query[1024];
+
+    // 1 updating request status
     snprintf(query, sizeof(query),
-        "UPDATE friend_requests SET status='accepted' "
-        "WHERE senderId=%ld AND receiverId=%ld",
+        "UPDATE friend_requests "
+         "SET status = 'accepted' "
+         "WHERE senderId = %ld "
+           "AND receiverId = %ld "
+           "AND status = 'pending' ",
         senderId, receiverId);
 
     if (mysql_query(conn, query)) {
-        printf("[ACCEPT FRIEND] Update error: %s\n", mysql_error(conn));
+        printf("[ACCEPT FRIEND REQUEST] Update error: %s\n", mysql_error(conn));
         return false;
     }
 
-    // one-way friendship request
+    if (mysql_affected_rows(conn) == 0) {
+        printf("[ACCEPT FRIEND REQUEST] There is no pending-request or request is already accepted\n");
+        return false;
+    }
+
+    // 2 creating two mirrored records to chat appear on both clients
     snprintf(query, sizeof(query),
-        "INSERT IGNORE INTO friends (userId, relatedUserId) VALUES (%ld, %ld), (%ld, %ld)",
-        senderId, receiverId, receiverId, senderId);
+        "INSERT IGNORE INTO friends (userId, relatedUserId) "
+         "VALUES (%ld, %ld), (%ld, %ld)",
+        senderId,   receiverId,   // first record: sender -> receiver
+        receiverId, senderId);    // second record: receiver -> sender
 
     if (mysql_query(conn, query)) {
-        printf("[ACCEPT FRIEND] Insert friends error: %s\n", mysql_error(conn));
+        printf("[ACCEPT FRIEND REQUEST] Insert friends error: %s\n", mysql_error(conn));
         return false;
     }
+
+    printf("[ACCEPT FRIEND REQUEST] Frienship created: %ld <-> %ld\n", senderId, receiverId);
     return true;
 }
 
@@ -552,7 +646,14 @@ void* acceptMessage(void *arg) {
             memset(localBuf, 0, sizeof(localBuf));
             int bytes = read(sock, localBuf, sizeof(localBuf) - 1);
             if (bytes <= 0) {
-                printf("[ACCEPT MESSAGE] Client disconnected (sock %d)\n", sock);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+
+                printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Client disconnected (sock %d)\n", buffer, sock);
                 goto client_disconnect;
             }
 
@@ -566,9 +667,16 @@ void* acceptMessage(void *arg) {
         }
 
         fullMessage[strcspn(fullMessage, "\n")] = '\0';
-        printf("[ACCEPT MESSAGE] Got %d bytes from client (sock %d)\n", totalReceived, sock);
-        printf("[ACCEPT MESSAGE] Client said (single message): %s\n", localBuf);
-        printf("[ACCEPT MESSAGE] Client said (full message): %s\n", fullMessage);
+        {
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+
+            printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Client said (full message, %d bytes): %s\n", buffer, totalReceived, fullMessage);
+        }
 
         if (strcmp(fullMessage, "test/") == 0) {
             strcpy(response, "ok\n");
@@ -723,11 +831,9 @@ void* acceptMessage(void *arg) {
 
                 if (senderId > 0 && receiverId > 0) {
                     if (sendFriendRequest(senderId, receiverId)) {
-                        sendPacket(sock, "requestFriendUpdate/");
+                        pushToUser(senderId, "requestFriendUpdate/");
+                        pushToUser(receiverId, "requestFriendUpdate/");
                         printf("[ADD FRIEND] Sent successfully %ld -> %ld\n", senderId, receiverId);
-                        char notify[128];
-                        snprintf(notify, sizeof(notify), "requestFriendUpdate/");
-                        pushToUser(senderId, notify);
                     } else {
                         printf("[ADD FRIEND] Failed to save request\n");
                         strncpy(response, "addFriend/error\n", 16);
@@ -897,7 +1003,13 @@ void* acceptMessage(void *arg) {
 
         if (strlen(response) > 0) {
             sendPacket(sock, response);
-            printf("[ACCEPT MESSAGE] Sent response for request: %s -> %s\n", fullMessage, response);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Sent response for request: %s -> %s\n", buffer, fullMessage, response);
         }
     }
 
@@ -927,7 +1039,7 @@ int main(void) {
         "CREATE TABLE IF NOT EXISTS users ("
             "userId BIGINT UNSIGNED NOT NULL PRIMARY KEY,"          // main column
             "username VARCHAR(24) NOT NULL,"
-            "email VARCHAR(24) NOT NULL UNIQUE,"                    // email (unique)
+            "email VARCHAR(24) NOT NULL,"                           // email
             "passwordHash VARCHAR(64) NOT NULL,"                    // SHA-256 in hex = 64 syms
             "avatarUrl VARCHAR(64) NOT NULL DEFAULT '',"
             "profileDesc VARCHAR(1025) NOT NULL DEFAULT ''"

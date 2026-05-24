@@ -134,6 +134,7 @@ static struct sockaddr_in serv_addr;
 bool connected = false;
 
 void sendMessage(const char *message);
+bool loadConfig(Config *cfg);
 void* recieveMessage(void* arg) {
     char localBuf[BUFFER_SIZE];
     char fullMessage[132000];  // large buffer
@@ -164,6 +165,10 @@ void* recieveMessage(void* arg) {
 
                 if (strncmp(localBuf, "save-profile/", 13) == 0) {
                     printf("[SAVE PROFILE] Profile successfully saved on server\n");
+                    loadConfig(&config);
+                    char msgBuf[BUFFER_SIZE];
+                    snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
+                    sendMessage(msgBuf);
                 }
                 else if (strncmp(localBuf, "createId/user/", 14) == 0) {
                     long newId = atol(localBuf + 14);
@@ -489,9 +494,6 @@ void* recieveMessage(void* arg) {
                 else if (strncmp(fullMessage, "requestFriendUpdate/", 20) == 0) {
                     char req[31] = {0};
                     snprintf(req, 30, "getFriendsList/%ld", config.userId);
-                    sendMessage(req);
-                    memset(req, 0, 31);
-                    snprintf(req, 30, "updateClient/%ld", config.userId);
                     sendMessage(req);
                     continue;
                 }
@@ -998,7 +1000,6 @@ int main(void) {
                     strcpy(config.profileDescription, newDesc);
                 }
                 saveConfig(&config);
-                loadConfig(&config);
             }
             DrawTextEx(font, "Путь к аватарке:", (Vector2){1320, 760}, 20, 2, LIGHTGRAY);
             if (GuiTextBox((Rectangle){1320, 790, 260, 40}, avatarPathInput, 255, activeField == 7)) {
