@@ -51,6 +51,7 @@ static pthread_t thread_id;
 #define MAX_MESS 2048
 #define MAX_RESPONSE MAX_NAME + MAX_EMAIL + MAX_PASS + MAX_AVATAR + MAX_DESC + MAX_MESS
 MYSQL *conn;
+pthread_mutex_t mysql_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 //
 //      DATABASE STRUCTRURE
@@ -179,8 +180,8 @@ bool pushToUser(long userId, const char *data) {
         curr = curr->next;
     }
 
-    pthread_mutex_unlock(&clientsMutex);
     printf("[PUSH] User %ld offline\n", userId);
+    pthread_mutex_unlock(&clientsMutex);
     return false;
 }
 
@@ -193,6 +194,7 @@ void getClientUpdates(long userId, int sock) {
             snprintf(response, 29, "updateClient/messages/error");
             sendPacket(sock, response);
             free(response);
+            pthread_mutex_unlock(&mysql_mutex);
             return;
         }
         int offset = 0;
@@ -204,6 +206,7 @@ void getClientUpdates(long userId, int sock) {
                       "FROM messages "
                       "WHERE receiverId = %ld AND isRead = FALSE "
                       "GROUP BY senderId", userId);
+        pthread_mutex_lock(&mysql_mutex);
         if (mysql_query(conn, query) == 0) {
             MYSQL_RES *res = mysql_store_result(conn);
             if (res) {
@@ -230,7 +233,7 @@ void getClientUpdates(long userId, int sock) {
         } else {
             offset += snprintf(response+offset, size-offset, "0\x1E");
         }
-        response[++offset] = '\0';
+        pthread_mutex_unlock(&mysql_mutex);
         sendPacket(sock, response);
         printf("[GET CLIENT UPDATES] Sent messages update for %ld: %s\n", userId, response);
         free(response);
@@ -244,6 +247,7 @@ void getClientUpdates(long userId, int sock) {
             snprintf(response, 35, "updateClient/friendRequests/error");
             sendPacket(sock, response);
             free(response);
+            pthread_mutex_unlock(&mysql_mutex);
             return;
         }
         int offset = 0;
@@ -251,12 +255,13 @@ void getClientUpdates(long userId, int sock) {
 
         char query[512];
         snprintf(query, sizeof(query),
-                "SELECT fr.id, fr.senderId, u.username, u.profileDesc "
-                      "FROM friend_requests fr "
-                      "JOIN users u ON fr.senderId = u.userId "
-                      "WHERE fr.receiverId = %ld AND fr.status = 'pending' "
-                      "ORDER BY fr.createdAt DESC LIMIT 30", userId);
+            "SELECT u.userId, u.username, u.profileDesc "
+                  "FROM users u "
+                  "WHERE u.userId IN ("
+                  "SELECT senderId FROM friend_requests "
+                  "WHERE receiverId = %ld AND status = 'pending')", userId);
 
+        pthread_mutex_lock(&mysql_mutex);
         if (mysql_query(conn, query) == 0) {
             MYSQL_RES *res = mysql_store_result(conn);
             if (res) {
@@ -266,12 +271,10 @@ void getClientUpdates(long userId, int sock) {
 
                 while ((row = mysql_fetch_row(res))) {
                     messageOffset += snprintf(message+messageOffset, size-messageOffset,
-                        "%s\x1F%s\x1F%s\x1F%s\x1F%s\x1E",   // id, senderId, username, profileDesc, avatarUrl
+                        "%s\x1F%s\x1F%s\x1E",   // userId, username, profileDesc
                         row[0] ? row[0] : "0",
                         row[1] ? row[1] : "0",
-                        row[2] ? row[2] : "",
-                        row[3] ? row[3] : "",
-                        ""
+                        row[2] ? row[2] : ""
                     );
                 }
                 mysql_free_result(res);
@@ -292,7 +295,7 @@ void getClientUpdates(long userId, int sock) {
         } else {
             offset += snprintf(response+offset, size-offset, "0\x1E");
         }
-        response[++offset] = '\0';
+        pthread_mutex_unlock(&mysql_mutex);
         sendPacket(sock, response);
         printf("[GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", userId, response);
         free(response);
@@ -307,6 +310,7 @@ void getChatHistory(long userId, long friendId, int sock) {
         snprintf(response, 23, "getChatHistory/error");
         sendPacket(sock, response);
         free(response);
+        pthread_mutex_unlock(&mysql_mutex);
         return;
     }
     int offset = snprintf(response, bufSize, "getChatHistory/%ld\x1E", friendId);
@@ -320,19 +324,21 @@ void getChatHistory(long userId, long friendId, int sock) {
         "ORDER BY sentAt ASC LIMIT 500",
         userId, friendId, friendId, userId);
 
+    pthread_mutex_lock(&mysql_mutex);
     if (mysql_query(conn, query)) {
         snprintf(response, 23, "getChatHistory/error");
         sendPacket(sock, response);
         free(response);
+        pthread_mutex_unlock(&mysql_mutex);
         return;
     }
 
     MYSQL_RES *res = mysql_store_result(conn);
     if (!res) {
-        response[++offset] = '\0';
         snprintf(response, 23, "getChatHistory/empty");
         sendPacket(sock, response);
         free(response);
+        pthread_mutex_unlock(&mysql_mutex);
         return;
     }
 
@@ -354,9 +360,9 @@ void getChatHistory(long userId, long friendId, int sock) {
     }
 
     mysql_free_result(res);
+    pthread_mutex_unlock(&mysql_mutex);
 
     if (offset > 20) {
-        response[++offset] = '\0';
         sendPacket(sock, response);
         printf("[GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", strlen(response), userId, friendId);
     } else {
@@ -375,6 +381,7 @@ bool saveUserToDB(long userId, const char *username, const char *email,
     char esc_avatar[MAX_AVATAR*2 + 10];
     char esc_desc[MAX_DESC*2 + 100];
 
+    pthread_mutex_lock(&mysql_mutex);
     mysql_real_escape_string(conn, esc_username, username, strlen(username));
     mysql_real_escape_string(conn, esc_email,    email,    strlen(email));
     mysql_real_escape_string(conn, esc_hash,     passwordHashHex, strlen(passwordHashHex));
@@ -400,20 +407,24 @@ bool saveUserToDB(long userId, const char *username, const char *email,
 
     if (written < 0 || written >= sizeof(query)) {
         printf("[SAVE USER TO DB] Query buffer too small, needed %d bytes\n", written);
+        pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
     if (mysql_query(conn, query)) {
         printf("[SAVE USER TO DB] users table error: %s\n", mysql_error(conn));
+        pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
     printf("[SAVE USER TO DB] User %ld saved/updated successfully\n", userId);
+    pthread_mutex_unlock(&mysql_mutex);
     return true;
 }
 
 bool saveMessageToDB(long messageId, long senderId, long receiverId, const char *message) {
     char escaped_message[ MAX_MESS*2 + 1 ];
+    pthread_mutex_lock(&mysql_mutex);
     mysql_real_escape_string(conn, escaped_message, message, strlen(message));
 
     char query[4096];
@@ -429,8 +440,10 @@ bool saveMessageToDB(long messageId, long senderId, long receiverId, const char 
 
     if (mysql_query(conn, query)) {
         fprintf(stderr, "\n[SAVE MESSAGE TO DB] Error: %s", mysql_error(conn));
+        pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
+    pthread_mutex_unlock(&mysql_mutex);
     return true;
 }
 
@@ -471,11 +484,13 @@ bool sendFriendRequest(long senderId, long receiverId) {
     char check[256];
     snprintf(check, sizeof(check), "SELECT 1 FROM users WHERE userId = %ld", receiverId);
 
+    pthread_mutex_lock(&mysql_mutex);
     if (mysql_query(conn, check) == 0) {
         MYSQL_RES *res = mysql_store_result(conn);
         if (res && mysql_num_rows(res) == 0) {
             mysql_free_result(res);
             printf("[SEND] User %ld doesn't exist\n", receiverId);
+            pthread_mutex_unlock(&mysql_mutex);
             return false;
         }
         mysql_free_result(res);
@@ -486,8 +501,8 @@ bool sendFriendRequest(long senderId, long receiverId) {
 
     // 1 are we already friends now?
     snprintf(query, sizeof(query),
-        "SELECT 1 FROM friends WHERE (userId = %ld AND relatedUserId = %ld) "
-        "OR (userId = %ld AND relatedUserId = %ld) LIMIT 1",
+        "SELECT 1 FROM friend_requests WHERE (senderId = %ld AND receiverId = %ld) "
+        "OR (senderId = %ld AND receiverId = %ld)",
         senderId, receiverId, receiverId, senderId);
 
     if (mysql_query(conn, query) == 0) {
@@ -495,6 +510,7 @@ bool sendFriendRequest(long senderId, long receiverId) {
         if (res && mysql_num_rows(res) > 0) {
             mysql_free_result(res);
             printf("[SEND] Already friends: %ld <-> %ld\n", senderId, receiverId);
+            pthread_mutex_unlock(&mysql_mutex);
             return false;
         }
         mysql_free_result(res);
@@ -524,6 +540,7 @@ bool sendFriendRequest(long senderId, long receiverId) {
             } else {
                 printf("[SEND] Request already received from the other side\n");
             }
+            pthread_mutex_unlock(&mysql_mutex);
             return false;
         }
         mysql_free_result(res);
@@ -538,10 +555,12 @@ bool sendFriendRequest(long senderId, long receiverId) {
 
     if (mysql_query(conn, query)) {
         printf("[SEND] DB error: %s\n", mysql_error(conn));
+        pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
     printf("[SEND FRIEND REQUEST] Success: %ld -> %ld\n", senderId, receiverId);
+    pthread_mutex_unlock(&mysql_mutex);
     return true;
 }
 
@@ -557,29 +576,44 @@ bool acceptFriendRequest(long receiverId, long senderId) {
            "AND status = 'pending' ",
         senderId, receiverId);
 
+    pthread_mutex_lock(&mysql_mutex);
     if (mysql_query(conn, query)) {
         printf("[ACCEPT FRIEND REQUEST] Update error: %s\n", mysql_error(conn));
+        pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
     if (mysql_affected_rows(conn) == 0) {
         printf("[ACCEPT FRIEND REQUEST] There is no pending-request or request is already accepted\n");
+        pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
     // 2 creating two mirrored records to chat appear on both clients
     snprintf(query, sizeof(query),
-        "INSERT IGNORE INTO friends (userId, relatedUserId) "
-         "VALUES (%ld, %ld), (%ld, %ld)",
-        senderId,   receiverId,   // first record: sender -> receiver
-        receiverId, senderId);    // second record: receiver -> sender
-
+        "INSERT IGNORE INTO friend_requests (senderId, receiverId, status) "
+         "VALUES (%ld, %ld, 'accepted')",
+        senderId,   receiverId);   // first record: sender -> receiver
     if (mysql_query(conn, query)) {
-        printf("[ACCEPT FRIEND REQUEST] Insert friends error: %s\n", mysql_error(conn));
+        printf("[ACCEPT FRIEND REQUEST] Insert friends error (1): %s\n", mysql_error(conn));
+        pthread_mutex_unlock(&mysql_mutex);
+        return false;
+    }
+
+    memset(query, 0, 1024);
+
+    snprintf(query, sizeof(query),
+        "INSERT IGNORE INTO friend_requests (senderId, receiverId, status) "
+         "VALUES (%ld, %ld, 'accepted')",
+        receiverId,   senderId);   // second record: receiver -> sender
+    if (mysql_query(conn, query)) {
+        printf("[ACCEPT FRIEND REQUEST] Insert friends error (2): %s\n", mysql_error(conn));
+        pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
     printf("[ACCEPT FRIEND REQUEST] Frienship created: %ld <-> %ld\n", senderId, receiverId);
+    pthread_mutex_unlock(&mysql_mutex);
     return true;
 }
 
@@ -756,11 +790,11 @@ void* acceptMessage(void *arg) {
             // getting relatedUserId
             char query[512];
             snprintf(query, sizeof(query),
-                     "SELECT receiverId FROM friend_requests WHERE senderId = %ld", userId);
+                     "SELECT receiverId FROM friend_requests WHERE senderId = %ld AND status = 'accepted'", userId);
 
+            pthread_mutex_lock(&mysql_mutex);
             if (mysql_query(conn, query)) {
                 printf("[GET FRIEND LIST] Failed to query friends for user %ld: %s\n", userId, mysql_error(conn));
-                response[++offset] = '\0';
                 snprintf(response, sizeof(response), "getFriendList/error");
                 sendPacket(sock, response);
                 continue;
@@ -768,7 +802,6 @@ void* acceptMessage(void *arg) {
 
             MYSQL_RES *res = mysql_store_result(conn);
             if (res == NULL) {
-                response[++offset] = '\0';
                 snprintf(response, sizeof(response), "getFriendList/empty");
                 sendPacket(sock, response);
                 continue;
@@ -803,16 +836,13 @@ void* acceptMessage(void *arg) {
                 }
             }
             mysql_free_result(res);
+            pthread_mutex_unlock(&mysql_mutex);
 
             // sending result
             if (offset > 15) {   // if there is atleast one friend
-                response[++offset] = '\0';
-                sendPacket(sock, response);
                 printf("[GET FRIENDS LIST] Sent for %ld\n", userId);
             } else {
-                response[++offset] = '\0';
                 snprintf(response, sizeof(response), "getFriendList/empty");
-                sendPacket(sock, response);
             }
         }
         else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
@@ -831,8 +861,7 @@ void* acceptMessage(void *arg) {
 
                 if (senderId > 0 && receiverId > 0) {
                     if (sendFriendRequest(senderId, receiverId)) {
-                        pushToUser(senderId, "requestFriendUpdate/");
-                        pushToUser(receiverId, "requestFriendUpdate/");
+                        pushToUser(receiverId, "requestPendingFriends/");
                         printf("[ADD FRIEND] Sent successfully %ld -> %ld\n", senderId, receiverId);
                     } else {
                         printf("[ADD FRIEND] Failed to save request\n");
@@ -864,10 +893,6 @@ void* acceptMessage(void *arg) {
                     // updating both clients
                     pushToUser(senderId, "requestFriendUpdate/");
                     pushToUser(receiverId, "requestFriendUpdate/");
-
-                    char updateCmd[64];
-                    snprintf(updateCmd, sizeof(updateCmd), "updateClient/%ld", receiverId);
-                    pushToUser(receiverId, updateCmd);
                 } else {
                     sendPacket(sock, "acceptFriend/error");
                 }
@@ -879,8 +904,15 @@ void* acceptMessage(void *arg) {
             long userId = strtol(fullMessage + 13, nullptr, 10);
             printf("[UPDATE CLIENT] Received for client/user %ld\n", userId);
             if (userId > 0) {
-                registerClient(userId, sock);
                 getClientUpdates(userId, sock);
+                continue;
+            }
+        }
+        else if (strncmp(fullMessage, "registerClient/", 15) == 0) {
+            long userId = strtol(fullMessage + 15, nullptr, 10);
+            printf("[REGISTER CLIENT] Received for client/user %ld\n", userId);
+            if (userId > 0) {
+                registerClient(userId, sock);
                 continue;
             }
         }
@@ -1000,6 +1032,51 @@ void* acceptMessage(void *arg) {
 
             free(png_data);
         }
+        else if (strncmp(fullMessage, "requestPendingFriends/", 22) == 0) {
+            char *ptr = fullMessage + 22;
+            long userId = strtol(ptr, &ptr, 10);
+            { // FRIEND REQUESTS
+                int size = 132000;
+                int offset = 0;
+                offset += snprintf(response+offset, size-offset, "newFriendRequest/");
+
+                char query[512];
+                snprintf(query, sizeof(query),
+                    "SELECT u.userId, u.username, u.profileDesc "
+                          "FROM users u "
+                          "WHERE u.userId IN ("
+                          "SELECT senderId FROM friend_requests "
+                          "WHERE receiverId = %ld AND status = 'pending')", userId);
+
+                pthread_mutex_lock(&mysql_mutex);
+                if (mysql_query(conn, query) == 0) {
+                    MYSQL_RES *res = mysql_store_result(conn);
+                    if (res) {
+                        MYSQL_ROW row;
+                        char message[MAX_RESPONSE] = {0};
+                        int messageOffset = 0;
+
+                        while ((row = mysql_fetch_row(res))) {
+                            messageOffset += snprintf(message+messageOffset, size-messageOffset,
+                                "%s\x1F%s\x1F%s\x1E",   // userId, username, profileDesc
+                                row[0] ? row[0] : "0",
+                                row[1] ? row[1] : "0",
+                                row[2] ? row[2] : ""
+                            );
+                        }
+                        mysql_free_result(res);
+
+                        offset += snprintf(response+offset, size-offset, "%s", message);
+                    } else {
+                        offset += snprintf(response+offset, size-offset, "0\x1E");
+                    }
+                } else {
+                    offset += snprintf(response+offset, size-offset, "0\x1E");
+                }
+                pthread_mutex_unlock(&mysql_mutex);
+                printf("[GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", userId, response);
+            }
+        }
 
         if (strlen(response) > 0) {
             sendPacket(sock, response);
@@ -1009,7 +1086,8 @@ void* acceptMessage(void *arg) {
             time(&rawtime);
             info = localtime(&rawtime);
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-            printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Sent response for request: %s -> %s\n", buffer, fullMessage, response);
+            printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Sent response for request (sock %d): %s -> %s\n", buffer, sock, fullMessage, response);
+            memset(response, 0, 132000);
         }
     }
 
