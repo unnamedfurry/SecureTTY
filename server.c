@@ -90,16 +90,34 @@ bool sendPacket(int sock, const char *data) {
     char packet[132000];
     int len = snprintf(packet, sizeof(packet), "%s\n", data);
     if (len < 0 || len >= (int)sizeof(packet)) {
-        printf("[SEND] Packet too big or error\n");
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][SEND] Packet too big or error\n", buffer);
         return false;
     }
 
     int sent = send(sock, packet, len, MSG_NOSIGNAL);
     if (sent < 0) {
         if (errno == EPIPE || errno == ECONNRESET) {
-            printf("[SEND] Client disconnected (sock=%d)\n", sock);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][SEND] Client disconnected (sock=%d)\n", buffer, sock);
         } else {
-            printf("[SEND] send() error: %s (sock=%d)\n", strerror(errno), sock);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][SEND] send() error: %s (sock=%d)\n", buffer, strerror(errno), sock);
         }
         return false;
     }
@@ -115,7 +133,13 @@ void registerClient(long userId, int sock) {
     ClientSession *curr = activeClients, *prev = nullptr;
     while (curr) {
         if (curr->userId == userId) {
-            printf("[NETWORK] Replacing old session for user %ld (old sock=%d)\n", userId, curr->sock);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][NETWORK] Replacing old session for user %ld (old sock=%d)\n", buffer, userId, curr->sock);
             close(curr->sock);  // closing old
 
             if (prev) prev->next = curr->next;
@@ -137,7 +161,13 @@ void registerClient(long userId, int sock) {
     session->next = activeClients;
     activeClients = session;
 
-    printf("[NETWORK] Client registered: userId=%ld, sock=%d\n", userId, sock);
+    time_t rawtime;
+    struct tm *info;
+    char buffer[80];
+    time(&rawtime);
+    info = localtime(&rawtime);
+    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+    printf("[%s][NETWORK] Client registered: userId=%ld, sock=%d\n", buffer, userId, sock);
     pthread_mutex_unlock(&clientsMutex);
 }
 
@@ -148,7 +178,13 @@ void unregisterClient(int sock) {
 
     while (curr) {
         if (curr->sock == sock) {
-            printf("[NETWORK] client disconnected: userId=%ld\n", curr->userId);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][NETWORK] client disconnected: userId=%ld\n", buffer, curr->userId);
             if (prev) prev->next = curr->next;
             else activeClients = curr->next;
             free(curr);
@@ -173,14 +209,26 @@ bool pushToUser(long userId, const char *data) {
             bool ok = sendPacket(sock, data);
 
             if (!ok) {
-                printf("[PUSH] Failed to send to user %ld (sock=%d). Will be cleaned on next read.\n", userId, sock);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][PUSH] Failed to send to user %ld (sock=%d). Will be cleaned on next read.\n", buffer, userId, sock);
             }
             return ok;
         }
         curr = curr->next;
     }
 
-    printf("[PUSH] User %ld offline\n", userId);
+    time_t rawtime;
+    struct tm *info;
+    char buffer[80];
+    time(&rawtime);
+    info = localtime(&rawtime);
+    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+    printf("[%s][PUSH] User %ld offline\n", buffer, userId);
     pthread_mutex_unlock(&clientsMutex);
     return false;
 }
@@ -190,7 +238,13 @@ void getClientUpdates(long userId, int sock) {
         int size = sizeof(char)*1050;
         char *response = malloc(size);
         if (response == NULL) {
-            printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer");
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][FATAL | CLIENT UPDATES] Not enough memory for updateClient answer", buffer);
             snprintf(response, 29, "updateClient/messages/error");
             sendPacket(sock, response);
             free(response);
@@ -235,7 +289,13 @@ void getClientUpdates(long userId, int sock) {
         }
         pthread_mutex_unlock(&mysql_mutex);
         sendPacket(sock, response);
-        printf("[GET CLIENT UPDATES] Sent messages update for %ld: %s\n", userId, response);
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][GET CLIENT UPDATES] Sent messages update for %ld: %s\n", buffer, userId, response);
         free(response);
     }
 
@@ -243,7 +303,13 @@ void getClientUpdates(long userId, int sock) {
         int size = sizeof(char)*1024;
         char *response = malloc(size);
         if (response == NULL) {
-            printf("[FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n");
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n", buffer);
             snprintf(response, 35, "updateClient/friendRequests/error");
             sendPacket(sock, response);
             free(response);
@@ -297,7 +363,13 @@ void getClientUpdates(long userId, int sock) {
         }
         pthread_mutex_unlock(&mysql_mutex);
         sendPacket(sock, response);
-        printf("[GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", userId, response);
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", buffer, userId, response);
         free(response);
     }
 }
@@ -306,7 +378,13 @@ void getChatHistory(long userId, long friendId, int sock) {
     int bufSize = BUFFER_SIZE;
     char *response = malloc(bufSize);
     if (!response) {
-        printf("[FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n");
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n", buffer);
         snprintf(response, 23, "getChatHistory/error");
         sendPacket(sock, response);
         free(response);
@@ -347,7 +425,15 @@ void getChatHistory(long userId, long friendId, int sock) {
         if (offset+1024 > bufSize) {
             bufSize+=BUFFER_SIZE;
             char *newResponse = realloc(response, bufSize);
-            if (!newResponse) { printf("[FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n"); free(response); continue; }
+            if (!newResponse) {
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n", buffer); free(response); continue;
+            }
             response = newResponse;
         }
         long msgId = strtol(row[0], nullptr, 10);
@@ -364,7 +450,13 @@ void getChatHistory(long userId, long friendId, int sock) {
 
     if (offset > 20) {
         sendPacket(sock, response);
-        printf("[GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", strlen(response), userId, friendId);
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", buffer, strlen(response), userId, friendId);
     } else {
         snprintf(response, 23, "getChatHistory/empty");
         sendPacket(sock, response);
@@ -406,18 +498,36 @@ bool saveUserToDB(long userId, const char *username, const char *email,
         esc_desc);
 
     if (written < 0 || written >= sizeof(query)) {
-        printf("[SAVE USER TO DB] Query buffer too small, needed %d bytes\n", written);
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][SAVE USER TO DB] Query buffer too small, needed %d bytes\n", buffer, written);
         pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
     if (mysql_query(conn, query)) {
-        printf("[SAVE USER TO DB] users table error: %s\n", mysql_error(conn));
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][SAVE USER TO DB] users table error: %s\n", buffer, mysql_error(conn));
         pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
-    printf("[SAVE USER TO DB] User %ld saved/updated successfully\n", userId);
+    time_t rawtime;
+    struct tm *info;
+    char buffer[80];
+    time(&rawtime);
+    info = localtime(&rawtime);
+    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+    printf("[%s][SAVE USER TO DB] User %ld saved/updated successfully\n", buffer, userId);
     pthread_mutex_unlock(&mysql_mutex);
     return true;
 }
@@ -476,7 +586,13 @@ void getFriends(long userId, int sock) {
 
 bool sendFriendRequest(long senderId, long receiverId) {
     if (senderId == receiverId) {
-        printf("[SEND FRIEND REQUEST] Can't add yourself\n");
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][SEND FRIEND REQUEST] Can't add yourself\n", buffer);
         return false;
     }
 
@@ -489,7 +605,13 @@ bool sendFriendRequest(long senderId, long receiverId) {
         MYSQL_RES *res = mysql_store_result(conn);
         if (res && mysql_num_rows(res) == 0) {
             mysql_free_result(res);
-            printf("[SEND] User %ld doesn't exist\n", receiverId);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][SEND] User %ld doesn't exist\n", buffer, receiverId);
             pthread_mutex_unlock(&mysql_mutex);
             return false;
         }
@@ -509,7 +631,13 @@ bool sendFriendRequest(long senderId, long receiverId) {
         MYSQL_RES *res = mysql_store_result(conn);
         if (res && mysql_num_rows(res) > 0) {
             mysql_free_result(res);
-            printf("[SEND] Already friends: %ld <-> %ld\n", senderId, receiverId);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][SEND] Already friends: %ld <-> %ld\n", buffer, senderId, receiverId);
             pthread_mutex_unlock(&mysql_mutex);
             return false;
         }
@@ -534,11 +662,29 @@ bool sendFriendRequest(long senderId, long receiverId) {
             mysql_free_result(res);
 
             if (strcmp(status, "accepted") == 0) {
-                printf("[SEND] Already friends (accepted request)\n");
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][SEND] Already friends (accepted request)\n", buffer);
             } else if (existing_sender == senderId) {
-                printf("[SEND] Request already sent\n");
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][SEND] Request already sent\n", buffer);
             } else {
-                printf("[SEND] Request already received from the other side\n");
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][SEND] Request already received from the other side\n", buffer);
             }
             pthread_mutex_unlock(&mysql_mutex);
             return false;
@@ -554,12 +700,24 @@ bool sendFriendRequest(long senderId, long receiverId) {
         senderId, receiverId);
 
     if (mysql_query(conn, query)) {
-        printf("[SEND] DB error: %s\n", mysql_error(conn));
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][SEND] DB error: %s\n", buffer, mysql_error(conn));
         pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
-    printf("[SEND FRIEND REQUEST] Success: %ld -> %ld\n", senderId, receiverId);
+    time_t rawtime;
+    struct tm *info;
+    char buffer[80];
+    time(&rawtime);
+    info = localtime(&rawtime);
+    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+    printf("[%s][SEND FRIEND REQUEST] Success: %ld -> %ld\n", buffer, senderId, receiverId);
     pthread_mutex_unlock(&mysql_mutex);
     return true;
 }
@@ -578,13 +736,25 @@ bool acceptFriendRequest(long receiverId, long senderId) {
 
     pthread_mutex_lock(&mysql_mutex);
     if (mysql_query(conn, query)) {
-        printf("[ACCEPT FRIEND REQUEST] Update error: %s\n", mysql_error(conn));
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][ACCEPT FRIEND REQUEST] Update error: %s\n", buffer, mysql_error(conn));
         pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
     if (mysql_affected_rows(conn) == 0) {
-        printf("[ACCEPT FRIEND REQUEST] There is no pending-request or request is already accepted\n");
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][ACCEPT FRIEND REQUEST] There is no pending-request or request is already accepted\n", buffer);
         pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
@@ -595,7 +765,13 @@ bool acceptFriendRequest(long receiverId, long senderId) {
          "VALUES (%ld, %ld, 'accepted')",
         senderId,   receiverId);   // first record: sender -> receiver
     if (mysql_query(conn, query)) {
-        printf("[ACCEPT FRIEND REQUEST] Insert friends error (1): %s\n", mysql_error(conn));
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][ACCEPT FRIEND REQUEST] Insert friends error (1): %s\n", buffer, mysql_error(conn));
         pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
@@ -607,12 +783,24 @@ bool acceptFriendRequest(long receiverId, long senderId) {
          "VALUES (%ld, %ld, 'accepted')",
         receiverId,   senderId);   // second record: receiver -> sender
     if (mysql_query(conn, query)) {
-        printf("[ACCEPT FRIEND REQUEST] Insert friends error (2): %s\n", mysql_error(conn));
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][ACCEPT FRIEND REQUEST] Insert friends error (2): %s\n", buffer, mysql_error(conn));
         pthread_mutex_unlock(&mysql_mutex);
         return false;
     }
 
-    printf("[ACCEPT FRIEND REQUEST] Frienship created: %ld <-> %ld\n", senderId, receiverId);
+    time_t rawtime;
+    struct tm *info;
+    char buffer[80];
+    time(&rawtime);
+    info = localtime(&rawtime);
+    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+    printf("[%s][ACCEPT FRIEND REQUEST] Frienship created: %ld <-> %ld\n", buffer, senderId, receiverId);
     pthread_mutex_unlock(&mysql_mutex);
     return true;
 }
@@ -686,7 +874,6 @@ void* acceptMessage(void *arg) {
                 time(&rawtime);
                 info = localtime(&rawtime);
                 strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-
                 printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Client disconnected (sock %d)\n", buffer, sock);
                 goto client_disconnect;
             }
@@ -708,7 +895,6 @@ void* acceptMessage(void *arg) {
             time(&rawtime);
             info = localtime(&rawtime);
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-
             printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Client said (full message, %d bytes): %s\n", buffer, totalReceived, fullMessage);
         }
 
@@ -716,7 +902,15 @@ void* acceptMessage(void *arg) {
             strcpy(response, "ok\n");
         }
         else if (strncmp(fullMessage, "receive-message/", 16) == 0) {
-            printf("[RECEIVE MESSAGE] Saving message: %s\n", fullMessage);
+            {
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][RECEIVE MESSAGE] Saving message: %s\n", buffer, fullMessage);
+            }
             char *parts[4] = {0};
             int count = 0;
             char *token = strtok(fullMessage + 16, "\x1E");
@@ -728,16 +922,35 @@ void* acceptMessage(void *arg) {
             long senderId = strtol(parts[1], nullptr, 10);
             long receiverId = strtol(parts[2], nullptr, 10);
             if (saveMessageToDB(messageId, senderId, receiverId, parts[3])) {
-                printf("[RECEIVE MESSAGE] Message saved: %ld -> %ld\n", senderId, receiverId);
-
+                {
+                    time_t rawtime;
+                    struct tm *info;
+                    char buffer[80];
+                    time(&rawtime);
+                    info = localtime(&rawtime);
+                    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                    printf("[%s][RECEIVE MESSAGE] Message saved: %ld -> %ld\n", buffer, senderId, receiverId);
+                }
                 char pushPacket[BUFFER_SIZE];
                 snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s\n", messageId, senderId, parts[3], "now");
 
                 if (!pushToUser(receiverId, pushPacket)) {
-                    printf("[RECEIVE MESSAGE] Receiver %ld is offline, message will be saved to DB\n", receiverId);
+                    time_t rawtime;
+                    struct tm *info;
+                    char buffer[80];
+                    time(&rawtime);
+                    info = localtime(&rawtime);
+                    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                    printf("[%s][RECEIVE MESSAGE] Receiver %ld is offline, message will be saved to DB\n", buffer, receiverId);
                 }
             } else {
-                printf("[RECEIVE MESSAGE] Failed to save message to db: %ld, %ld\n", senderId, messageId);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][RECEIVE MESSAGE] Failed to save message to db: %ld, %ld\n", buffer, senderId, messageId);
                 strcpy(response, "err\n");
             }
         }
@@ -746,14 +959,26 @@ void* acceptMessage(void *arg) {
             // generating 10-digit number from 1000000000 to 9999999999
             long id = 1000000000L + (rand() % 9000000000L);
             sprintf(response, "createId/user/%ld\n", id);
-            printf("[CREATE USER ID] New Id generated for user: %ld\n", id);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][CREATE USER ID] New Id generated for user: %ld\n", buffer, id);
         }
         else if (strncmp(fullMessage, "createId/message", 16) == 0) {
             srand(time(NULL) ^ clock());
             // generating 10-digit number from 1000000000 to 9999999999
             long id = 1000000000L + (rand() % 9000000000L);
             sprintf(response, "createId/message/%ld\n", id);
-            printf("[CREATE MESSAGE ID] New Id generated for message: %ld\n", id);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][CREATE MESSAGE ID] New Id generated for message: %ld\n", buffer, id);
         }
         else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
 
@@ -768,7 +993,13 @@ void* acceptMessage(void *arg) {
 
             if (count >= 6) {
                 long uid = strtol(parts[0], nullptr, 10);
-                printf("[SAVE PROFILE] received for %ld\n", uid);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][SAVE PROFILE] received for %ld\n", buffer, uid);
                 bool success = saveUserToDB(uid,
                                             parts[1], parts[2], parts[3],
                                             parts[4], parts[5]);
@@ -794,7 +1025,13 @@ void* acceptMessage(void *arg) {
 
             pthread_mutex_lock(&mysql_mutex);
             if (mysql_query(conn, query)) {
-                printf("[GET FRIEND LIST] Failed to query friends for user %ld: %s\n", userId, mysql_error(conn));
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][GET FRIEND LIST] Failed to query friends for user %ld: %s\n", buffer, userId, mysql_error(conn));
                 snprintf(response, sizeof(response), "getFriendList/error");
                 sendPacket(sock, response);
                 continue;
@@ -840,7 +1077,13 @@ void* acceptMessage(void *arg) {
 
             // sending result
             if (offset > 15) {   // if there is atleast one friend
-                printf("[GET FRIENDS LIST] Sent for %ld\n", userId);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][GET FRIENDS LIST] Sent for %ld\n", buffer, userId);
             } else {
                 snprintf(response, sizeof(response), "getFriendList/empty");
             }
@@ -857,22 +1100,53 @@ void* acceptMessage(void *arg) {
             if (count == 2) {
                 long senderId = strtol(parts[0], nullptr, 10);
                 long receiverId = strtol(parts[1], nullptr, 10);
-                printf("[ADD FRIEND] received for %ld -> %ld\n", senderId, receiverId);
-
+                {
+                    time_t rawtime;
+                    struct tm *info;
+                    char buffer[80];
+                    time(&rawtime);
+                    info = localtime(&rawtime);
+                    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                    printf("[%s][ADD FRIEND] received for %ld -> %ld\n", buffer, senderId, receiverId);
+                }
                 if (senderId > 0 && receiverId > 0) {
                     if (sendFriendRequest(senderId, receiverId)) {
                         pushToUser(receiverId, "requestPendingFriends/");
-                        printf("[ADD FRIEND] Sent successfully %ld -> %ld\n", senderId, receiverId);
+                        time_t rawtime;
+                        struct tm *info;
+                        char buffer[80];
+                        time(&rawtime);
+                        info = localtime(&rawtime);
+                        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                        printf("[%s][ADD FRIEND] Sent successfully %ld -> %ld\n", buffer, senderId, receiverId);
                     } else {
-                        printf("[ADD FRIEND] Failed to save request\n");
+                        time_t rawtime;
+                        struct tm *info;
+                        char buffer[80];
+                        time(&rawtime);
+                        info = localtime(&rawtime);
+                        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                        printf("[%s][ADD FRIEND] Failed to save request\n", buffer);
                         strncpy(response, "addFriend/error\n", 16);
                     }
                 } else {
-                    printf("[ADD FRIEND] Bad ID\n");
+                    time_t rawtime;
+                    struct tm *info;
+                    char buffer[80];
+                    time(&rawtime);
+                    info = localtime(&rawtime);
+                    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                    printf("[%s][ADD FRIEND] Bad ID\n", buffer);
                     strncpy(response, "addFriend/error\n", 16);
                 }
             } else {
-                printf("[ADD FRIEND] Bad format, got %d/2 parts\n", count);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][ADD FRIEND] Bad format, got %d/2 parts\n", buffer, count);
                 strncpy(response, "addFriend/badformat\n", 20);
             }
         }
@@ -902,7 +1176,13 @@ void* acceptMessage(void *arg) {
         }
         else if (strncmp(fullMessage, "updateClient/", 13) == 0) {
             long userId = strtol(fullMessage + 13, nullptr, 10);
-            printf("[UPDATE CLIENT] Received for client/user %ld\n", userId);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][UPDATE CLIENT] Received for client/user %ld\n", buffer, userId);
             if (userId > 0) {
                 getClientUpdates(userId, sock);
                 continue;
@@ -910,7 +1190,13 @@ void* acceptMessage(void *arg) {
         }
         else if (strncmp(fullMessage, "registerClient/", 15) == 0) {
             long userId = strtol(fullMessage + 15, nullptr, 10);
-            printf("[REGISTER CLIENT] Received for client/user %ld\n", userId);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][REGISTER CLIENT] Received for client/user %ld\n", buffer, userId);
             if (userId > 0) {
                 registerClient(userId, sock);
                 continue;
@@ -928,7 +1214,13 @@ void* acceptMessage(void *arg) {
             if (count == 2) {
                 long userId = strtol(parts[0], nullptr, 10);
                 long friendId = strtol(parts[1], nullptr, 10);
-                printf("[GET CHAT HISTORY] Received history request from %ld with %ld\n", userId, friendId);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][GET CHAT HISTORY] Received history request from %ld with %ld\n", buffer, userId, friendId);
 
                 if (userId > 0 && friendId > 0) {
                     getChatHistory(userId, friendId, sock);
@@ -939,8 +1231,15 @@ void* acceptMessage(void *arg) {
         else if (strncmp(fullMessage, "getAvatar/", 10) == 0) {
             long sender = strtol(fullMessage + 10, nullptr, 10);
             long reciever = strtol(fullMessage + 20, nullptr, 10);
-            printf("[GET AVATAR] %ld requested %ld's avatar\n", sender, reciever);
-
+            {
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][GET AVATAR] %ld requested %ld's avatar\n", buffer, sender, reciever);
+            }
             char filepath[256];
             snprintf(filepath, sizeof(filepath), "avatars/%ld.png", reciever);
 
@@ -960,14 +1259,26 @@ void* acceptMessage(void *arg) {
                 if (b64) {
                     snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E%s", reciever, b64);
                     free(b64);
-                    printf("[GET AVATAR] sent %ld's avatar for %ld (%ld bytes)\n", reciever, sender, fileSize);
+                    time_t rawtime;
+                    struct tm *info;
+                    char buffer[80];
+                    time(&rawtime);
+                    info = localtime(&rawtime);
+                    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                    printf("[%s][GET AVATAR] sent %ld's avatar for %ld (%ld bytes)\n", buffer, reciever, sender, fileSize);
                 }
             } else {
                 // if theres no avatar - sending null
                 //char response1[64];
                 snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E", reciever);
                 //sendPacket(sock, response1);
-                printf("[GET AVATAR] %ld's avatar not found\n", reciever);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][GET AVATAR] %ld's avatar not found\n", buffer,reciever);
             }
         }
         else if (strncmp(fullMessage, "saveAvatar/", 11) == 0) {
@@ -975,14 +1286,26 @@ void* acceptMessage(void *arg) {
             long userId = strtol(ptr, &ptr, 10);
 
             if (userId <= 0 || *ptr != '\x1E') {
-                printf("[SAVE AVATAR] Parse error: invalid userId or missing separator\n");
-                printf("[SAVE AVATAR] Received: %.100s...\n", fullMessage);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][SAVE AVATAR] Parse error: invalid userId or missing separator\n", buffer);
+                printf("[%s][SAVE AVATAR] Received: %.100s...\n", buffer, fullMessage);
                 continue;
             }
 
             char *b64_data = ptr + 1; // base64 start
             if (strlen(b64_data) < 100) {
-                printf("[SAVE AVATAR] Base64 data too short (%zu chars)\n", strlen(b64_data));
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][SAVE AVATAR] Base64 data too short (%zu chars)\n", buffer, strlen(b64_data));
                 continue;
             }
 
@@ -990,7 +1313,13 @@ void* acceptMessage(void *arg) {
             unsigned char* png_data = Base64Decode(b64_data, &decoded_len);
 
             if (!png_data || decoded_len < 500) { // minimal PNG size
-                printf("[SAVE AVATAR] Decode failed or image too small (%d bytes)\n", decoded_len);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][SAVE AVATAR] Decode failed or image too small (%d bytes)\n", buffer, decoded_len);
                 free(png_data);
                 continue;
             }
@@ -1019,12 +1348,30 @@ void* acceptMessage(void *arg) {
                         png_data[0] == 0x89 && png_data[1] == 'P' &&
                         png_data[2] == 'N' && png_data[3] == 'G') {
 
-                        printf("[SAVE AVATAR] Good PNG signature, saved %ld's avatar successfully (%d bytes)\n", userId, decoded_len);
+                        time_t rawtime;
+                        struct tm *info;
+                        char buffer[80];
+                        time(&rawtime);
+                        info = localtime(&rawtime);
+                        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                        printf("[%s][SAVE AVATAR] Good PNG signature, saved %ld's avatar successfully (%d bytes)\n", buffer, userId, decoded_len);
                     } else {
-                        printf("[SAVE AVATAR] Bad PNG signature, saved possibly corrupted %ld's avatar\n" RESET, userId);
+                        time_t rawtime;
+                        struct tm *info;
+                        char buffer[80];
+                        time(&rawtime);
+                        info = localtime(&rawtime);
+                        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                        printf("[%s][SAVE AVATAR] Bad PNG signature, saved possibly corrupted %ld's avatar\n" RESET, buffer, userId);
                     }
                 } else {
-                    printf("[SAVE AVATAR] Write error: only %zu of %d bytes written\n", written, decoded_len);
+                    time_t rawtime;
+                    struct tm *info;
+                    char buffer[80];
+                    time(&rawtime);
+                    info = localtime(&rawtime);
+                    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                    printf("[%s][SAVE AVATAR] Write error: only %zu of %d bytes written\n", buffer, written, decoded_len);
                 }
             } else {
                 perror("[SAVE AVATAR] fopen failed");
@@ -1074,7 +1421,13 @@ void* acceptMessage(void *arg) {
                     offset += snprintf(response+offset, size-offset, "0\x1E");
                 }
                 pthread_mutex_unlock(&mysql_mutex);
-                printf("[GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", userId, response);
+                time_t rawtime;
+                struct tm *info;
+                char buffer[80];
+                time(&rawtime);
+                info = localtime(&rawtime);
+                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+                printf("[%s][GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", buffer, userId, response);
             }
         }
 
@@ -1099,17 +1452,39 @@ void* acceptMessage(void *arg) {
 int main(void) {
     printf("\n");
     // if we don't connect to database, chat probably won't work
-    printf("[MYSQL] Connecting ro mysql\n");
+    {
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][MYSQL] Connecting ro mysql\n", buffer);
+    }
     conn = mysql_init(nullptr);
 
     if (mysql_real_connect(conn, HOST, MYSQL_USER, MYSQL_PASSWORD, "unchat", 0, nullptr, 0) == NULL) {
     //if (mysql_real_connect(conn, "localhost", "root", "681137", "unchat", 0, nullptr, 0) == NULL) {
-        printf("[MYSQL] Failed to connect to database: %s\n", mysql_error(conn));
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][MYSQL] Failed to connect to database: %s\n", buffer, mysql_error(conn));
         mysql_close(conn);
         return 0;
     }
 
-    printf("[MYSQL] Connected to database successfully\n");
+    {
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][MYSQL] Connected to database successfully\n", buffer);
+    }
 
     // we also need to initialize tables
     const char *queries[] = {
@@ -1150,9 +1525,21 @@ int main(void) {
 
     for (int i = 0; i < 3; i++) {
         if (mysql_query(conn, queries[i])) {
-            printf("[MYSQL] Error creating table %d: %s\n", i, mysql_error(conn));
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][MYSQL] Error creating table %d: %s\n", buffer, i, mysql_error(conn));
         } else {
-            printf("[MYSQL] Table %d created successfully\n", i);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][MYSQL] Table %d created successfully\n", buffer, i);
         }
     }
 
@@ -1160,9 +1547,21 @@ int main(void) {
 
     for (int i = 0; i < num_queries; i++) {
         if (mysql_query(conn, queries[i])) {
-            printf("[MYSQL] Error creating table %d: %s\n", i, mysql_error(conn));
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][MYSQL] Error creating table %d: %s\n", buffer, i, mysql_error(conn));
         } else {
-            printf("[MYSQL] Table %d created successfully\n", i);
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][MYSQL] Table %d created successfully\n", buffer, i);
         }
     }
 
@@ -1180,7 +1579,13 @@ int main(void) {
 
     // Start listening
     listen(server_fd, 10);
-    printf("[NETWORK] Server is listening on port %d\n", port);
+    time_t rawtime;
+    struct tm *info;
+    char buffer[80];
+    time(&rawtime);
+    info = localtime(&rawtime);
+    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+    printf("[%s][NETWORK] Server is listening on port %d\n", buffer, port);
 
     while (1) {
         new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);

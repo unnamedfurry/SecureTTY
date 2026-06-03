@@ -10,7 +10,7 @@ pkg_check_modules(MYSQL REQUIRED mysqlclient)
 
 add_executable(client client.c)
 add_executable(server server.c)
-target_link_libraries(client PRIVATE raylib GL m pthread dl rt X11 OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(client PRIVATE raylib GL m pthread dl rt X11 Xrandr Xinerama Xi Xcursor OpenSSL::SSL OpenSSL::Crypto)
 target_link_libraries(server PRIVATE m pthread OpenSSL::SSL OpenSSL::Crypto ${MYSQL_LIBRARIES})
 target_include_directories(client PRIVATE ${CMAKE_SOURCE_DIR}/build_include)
 target_include_directories(server PRIVATE ${MYSQL_INCLUDE_DIRS})

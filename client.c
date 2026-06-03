@@ -927,7 +927,6 @@ int main(void) {
     static float scrollFriction = 0.92f;    // fade out timne (0.85 - hard, 0.94 - soft)
     static bool isDraggingScrollbar = false;
     bool autoScrollAllowed = true;
-    bool loadedChat = true;
 
     while (!WindowShouldClose()) {
         float contentHeight = 0.0f;
@@ -1142,7 +1141,7 @@ int main(void) {
                 activeField = (activeField == 5) ? -1 : 5;
             }
             if (GuiButton((Rectangle){1141, 839, 160, 60}, "Отправить") || IsKeyPressed(KEY_ENTER)) {
-                if (strlen(message) != 0) {
+                if (strlen(message)!=0 && currentFriendId<=0L) {
                     sendMessage("createId/message");
                     message[2048]='\0';
                     char parsed[BUFFER_SIZE] = {0};
