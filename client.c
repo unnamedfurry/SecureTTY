@@ -871,16 +871,23 @@ typedef struct {
 } RootFiles;
 bool initialized = false;
 float contentHeight = 0.0f;
-static float scrollOffset = 0.0f;
-static bool isDraggingScrollbar = false;
+float scrollOffset = 0.0f;
+bool isDraggingScrollbar = false;
 float contentHeight2 = 0.0f;
-static float scrollOffset2 = 0.0f;
-static bool isDraggingScrollbar2 = false;
-static float scrollVelocity = 0.0f;
-static float scrollFriction = 0.92f;
-static float scrollVelocity2 = 0.0f;
-static float scrollFriction2 = 0.92f;
-RootFiles *rootFiles[1024];
+float scrollOffset2 = 0.0f;
+bool isDraggingScrollbar2 = false;
+float scrollVelocity = 0.0f;
+float scrollFriction = 0.92f;
+float scrollVelocity2 = 0.0f;
+float scrollFriction2 = 0.92f;
+RootFiles *rootFiles[5120];
+bool readDirFiles = false;
+int rootFoldersAmount = 0;
+int rootFilesAmount = 0;
+float filenameOffset = 0.0f;
+int offsetedFileId = -1;
+int selectedOnce = 0;
+int offsetedPath = 0;
 void format_size_pretty(uint64_t bytes, char *buf, size_t size){
     const char *units[] = {"B", "KiB", "MiB", "GiB", "TiB"};
     int unit = 0;
@@ -907,18 +914,16 @@ void format_date_short(time_t timestamp, char *buffer, size_t bufsize){
 
     strftime(buffer, bufsize, "%d.%m.%Y %H:%M", tm_info);
 }
-static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColor, Color secondaryColor, Color textColor) {
+char* GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColor, Color secondaryColor, Color textColor) {
     // Defining window's size, can't be less than 400 by 600 pixels
-    const int minWidth = 400;
+    const int minWidth = 800;
     const int minHeight = 600;
     int width = ((int)bounds.width > minWidth) ? (int)bounds.width : minWidth;
     int height = ((int)bounds.height > minHeight) ? (int)bounds.height : minHeight;
     // Defining variables for left chunk that will display file tree
-    if (initialized==false) {path = malloc(256 * sizeof(char));}
-    int rootFoldersAmount = 0;
-    int rootFilesAmount = 0;
+    if (initialized==false) {path = malloc(512 * sizeof(char));}
 
-    // Drawing window base and header
+    // Drawing window base and moving header
     DrawRectangle((int)bounds.x, (int)bounds.y, width, height, secondaryColor);
     DrawRectangleLines((int)bounds.x, (int)bounds.y, width, height, primaryColor);
     int field2Width = width/3;
@@ -930,7 +935,13 @@ static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primar
     DrawLine((int)bounds.x, (int)bounds.y+70, (int)bounds.x+width, (int)bounds.y+70, primaryColor);
     DrawLine((int)bounds.x, (int)bounds.y+30, (int)bounds.x+width, (int)bounds.y+30, primaryColor);
     DrawTextEx(font,"Select File",(Vector2){bounds.x+2, bounds.y+4},28,2,textColor);
-    DrawTextEx(font,path,(Vector2){bounds.x+8, bounds.y+38},26,2,textColor);
+    Vector2 measure = MeasureTextEx(font, path, (float)18, 2.0f);
+    BeginScissorMode(bounds.x+8, bounds.y+38, bounds.width-16, 30);
+    DrawTextEx(font,path,(Vector2){bounds.x+8-offsetedPath, bounds.y+38},26,2,textColor);
+    EndScissorMode();
+    if (CheckCollisionPointRec(GetMousePosition(), (Rectangle){bounds.x+8, bounds.y+38, bounds.width-16, 30})) {
+        offsetedPath = (offsetedPath + 0.2f) * (float)(offsetedPath<measure.x);
+    }
 
     // ------------------------
     //
@@ -939,41 +950,59 @@ static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primar
     // ------------------------
 
     // Opening root folder
-
+    static char lastPath[512] = {0};
     struct dirent **dir;
-    if (path == NULL) {printf("\nError: not enough memory for directory listing.\n"); return 1;}
+    if (path == NULL) {printf("\nError: not enough memory for directory listing.\n"); return NULL;}
     if (initialized==false) {strncpy(path, "/", 256);}
 
-    // Trying ro read root folder: if succeeded, store files, if not, work with current program's directory
     next_dir:
-    int n = scandir(path, &dir, nullptr, alphasort);
+    if (initialized==false) { // allocating memory if called firstly
+        for (int i=0; i<256; i++) {rootFolders[i] = malloc(256 * sizeof(char)); if (rootFolders[i] == NULL) {printf("\nError: not enough memory for file listing.\n"); return NULL;}}
+        for (int i=0; i<5120; i++) {rootFiles[i] = malloc(sizeof(RootFiles)); if (rootFiles[i] == NULL) {printf("\nError: not enough memory for file listing.\n"); return NULL;}}
+        initialized=true;
+    }
 
-        if (initialized==false) {
-            for (int i=0; i<256; i++) {rootFolders[i] = malloc(256 * sizeof(char)); if (rootFolders[i] == NULL) {printf("\nError: not enough memory for file listing.\n"); return 1;}}
-            for (int i=0; i<1024; i++) {rootFiles[i] = malloc(sizeof(RootFiles)); if (rootFiles[i] == NULL) {printf("\nError: not enough memory for file listing.\n"); return 1;}}
-            initialized=true;
+    // Trying ro read root folder: if succeeded - store files, if not - work with current program's directory
+    if (!initialized || readDirFiles == false || strcmp(path, lastPath) != 0) {
+        rootFoldersAmount = 0;
+        rootFilesAmount = 0;
+        int n = scandir(path, &dir, nullptr, alphasort);
+
+        if (n < 0) {
+            printf("scandir error on %s\n", path);
         }
-        if (n>0) {
+        else if (n > 0) {
             for (int i=0; i<n; i++) {
                 if (strcmp(dir[i]->d_name, ".") == 0 || strcmp(dir[i]->d_name, "..") == 0) continue; // skipping sub-files and sub-folders
-                if (dir[i]->d_type == DT_DIR) {
-                    strncpy(rootFolders[rootFoldersAmount], dir[i]->d_name, 255);
-                    rootFoldersAmount++;
-                }
-                if (dir[i]->d_type == DT_REG) {
-                    char fullpath[256] = {0};
-                    snprintf(fullpath, 255, "%s/%s", path, dir[i]->d_name);
-                    struct stat st;
-                    if (stat(fullpath, &st) == 0) {
+
+                char fullpath[512] = {0};
+                snprintf(fullpath, sizeof(fullpath), "%s%s", path, dir[i]->d_name);
+                struct stat st;
+                if (stat(fullpath, &st) != 0)
+                    continue;
+
+                if (S_ISDIR(st.st_mode)) {
+                    // folder
+                    if (rootFoldersAmount < 256) {
+                        strncpy(rootFolders[rootFoldersAmount], dir[i]->d_name, 255);
+                        rootFolders[rootFoldersAmount][255] = '\0';
+                        rootFoldersAmount++;
+                    }
+                } else if (S_ISREG(st.st_mode)) {
+                    // regular file
+                    if (rootFilesAmount < 5120) {
                         strncpy(rootFiles[rootFilesAmount]->name, dir[i]->d_name, 255);
+                        rootFiles[rootFilesAmount]->name[255] = '\0';
                         format_size_pretty(st.st_size, rootFiles[rootFilesAmount]->size, 23);
                         format_date_short(st.st_ctime, rootFiles[rootFilesAmount]->dateTime, 23);
+                        rootFilesAmount++;
                     }
-                    rootFilesAmount++;
                 }
             }
         }
+    }
 
+    readDirFiles=true;
     free(dir);
     // -------- Left Chunk (Folder List) --------
     {
@@ -992,7 +1021,7 @@ static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primar
         }
         float maxScroll = fmaxf(0.0f, contentHeight - visibleHeight);
         scrollOffset = clamp(scrollOffset, 0.0f, maxScroll);
-        // Rendering left chunk (only visible)
+        // Setting up variables
         int x = (int)bounds.x + 8;
         int startY = (int)bounds.y + 82;
         float currentY = (float)startY - scrollOffset;
@@ -1004,24 +1033,30 @@ static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primar
                 30
             };
 
+            // Rendering left chunk (only visible)
             if (currentY > (float)startY - 10 &&
                 currentY < (float)startY + (float)field2Height - 34) {
 
                 BeginScissorMode((int)directoryRectangle.x, (int)directoryRectangle.y, (int)directoryRectangle.width, (int)directoryRectangle.height);
                 DrawRectangleLines(x, (int)currentY, field2Width - 26, 30, primaryColor);
                 DrawTextEx(font, rootFolders[i],
-                           (Vector2){(float)x + 4, currentY + 4}, 20, 2, textColor);
+                           (Vector2){(float)x + 4, currentY + 4}, 18, 2, textColor);
                 EndScissorMode();
 
                 if (CheckCollisionPointRec(GetMousePosition(), directoryRectangle)) {
                     DrawRectangleLines(x, (int)currentY, field2Width - 26, 30, SKYBLUE);
 
+                    // Entering path clicked
                     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                         strncat(path, rootFolders[i], strlen(rootFolders[i]));
                         strncat(path, "/", 1);
+                        readDirFiles=false;
+                        rootFoldersAmount = 0;
+                        rootFilesAmount = 0;
+                        selectedOnce=0;
                     }
                 }
-                }
+            }
 
             currentY += 34.0f;
         }
@@ -1042,7 +1077,12 @@ static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primar
             } else if (k==2) {
                 strncpy(path, "/", sizeof(path)-1);
             }
+            readDirFiles=false;
+            rootFoldersAmount = 0;
+            rootFilesAmount = 0;
+            selectedOnce=0;
         }
+        // Rendering scrollbar
         if (contentHeight > (float)field2Height) {
             float scrollbarTrackHeight = (float)field2Height-14;
             float scrollbarHeight = ((float)field2Height / contentHeight) * scrollbarTrackHeight;
@@ -1077,7 +1117,6 @@ static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primar
         }
     }
 
-
     // -------- Right Chunk (File List) --------
     {
         // Scroll settings
@@ -1095,7 +1134,7 @@ static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primar
         }
         float maxScroll = fmaxf(0.0f, contentHeight2 - visibleHeight);
         scrollOffset2 = clamp(scrollOffset2, 0.0f, maxScroll);
-        // Rendering left chunk (only visible)
+        // Setting up variables
         int x = (int)bounds.x + field2Width+8;
         int startY = (int)bounds.y + 82;
         float currentY = (float)startY - scrollOffset2;
@@ -1103,44 +1142,69 @@ static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primar
             Rectangle fileRectangle = {
                 (float)x,
                 currentY,
-                (float)field3Width - 26,
+                (float)field3Width - 32,
                 30
             };
 
+            // Rendering right chunk (only visible)
             if (currentY > (float)startY - 10 &&
                 currentY < (float)startY + (float)field3Height - 34) {
 
+                // Date-Time and Size
+                Vector2 tMeasure = MeasureTextEx(font, rootFiles[i]->name, (float)18, 2.0f);
+                float maxTextLength = (35.4f*(fileRectangle.width/100));
+                DrawRectangleLines(x, (int)currentY, field3Width - 32, 30, primaryColor);
                 BeginScissorMode((int)fileRectangle.x, (int)fileRectangle.y, (int)fileRectangle.width, (int)fileRectangle.height);
-                DrawRectangleLines(x, (int)currentY, field3Width - 26, 30, primaryColor);
-                DrawTextEx(font, rootFiles[i]->name,
-                           (Vector2){(float)x + 4, currentY + 4}, 20, 2, textColor);
                 DrawTextEx(font, rootFiles[i]->dateTime,
-                           (Vector2){(float)x + (float)field3Width/3, currentY + 4}, 20, 2, textColor);
+                              (Vector2){(float)x + 1.2f*fileRectangle.width/3, currentY + 6}, 18, 2, textColor);
                 DrawTextEx(font, rootFiles[i]->size,
-                           (Vector2){(float)x + 2.24f*(float)field3Width/3, currentY + 4}, 20, 2, textColor);
+                           (Vector2){(float)x + 2.34f*fileRectangle.width/3, currentY + 6}, 18, 2, textColor);
                 EndScissorMode();
 
+                // Cutting and moving FileName leftwards if name could collide with date-time text
+                if (tMeasure.x >= maxTextLength) {
+                    BeginScissorMode((int)fileRectangle.x+4, (int)fileRectangle.y, (int)maxTextLength, (int)fileRectangle.height);
+                    DrawTextEx(font, rootFiles[i]->name,
+                               (Vector2){(float)x + 4 - (i==offsetedFileId)*filenameOffset, currentY + 6}, 18, 2, textColor);
+                    EndScissorMode();
+                } else {
+                    DrawTextEx(font, rootFiles[i]->name,
+                               (Vector2){(float)x + 4, currentY + 6}, 18, 2, textColor);
+                }
+
+                // Marking current file slot as wanted
+                // Double-Click selects the wanted file and exits the window
                 if (CheckCollisionPointRec(GetMousePosition(), fileRectangle)) {
-                    DrawRectangleLines(x, (int)currentY, field3Width - 26, 30, SKYBLUE);
+                    filenameOffset = (filenameOffset + 0.2f) * (float)(filenameOffset<tMeasure.x);
+                    DrawRectangleLines(x, (int)currentY, field3Width - 32, 30, SKYBLUE);
 
                     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-
+                        selectedOnce++;
                     }
+                    // TODO: открыть файл на два клика если выбран один и тот же слот
+                    if (selectedOnce>=2 && offsetedFileId==i) {
+                        strcat(path, rootFiles[i]->name);
+                        goto exit;
+                    } else {
+                        selectedOnce=0;
+                    }
+                    offsetedFileId=i;
                 }
             }
 
             currentY += 34.0f;
         }
+        // Rendering scrollbar
         if (contentHeight2 > (float)field3Height) {
             float scrollbarTrackHeight = (float)field3Height-14;
             float scrollbarHeight = ((float)field3Height / contentHeight2) * scrollbarTrackHeight;
             float scrollbarY = (float)startY + (scrollOffset2 / contentHeight2) * scrollbarTrackHeight;
 
-            DrawRectangle(x + field3Width - 22, startY, 10, field3Height-14, Fade(BLACK, 0.3f));
+            DrawRectangle(x + field3Width - 28, startY, 10, field3Height-14, Fade(BLACK, 0.3f));
 
             Color sbColor = isDraggingScrollbar2 ? WHITE : LIGHTGRAY;
             Rectangle scrollbarRect = {
-                (float)(x + field3Width - 22),
+                (float)(x + field3Width - 28),
                 scrollbarY,
                 10,
                 scrollbarHeight
@@ -1165,12 +1229,25 @@ static int GuiFileSelector(Rectangle bounds, char *text, Font font, Color primar
         }
     }
 
+    exit:
     if (IsKeyPressed(KEY_ESCAPE)) {
         initialized=false;
+        readDirFiles=false;
+        rootFoldersAmount = 0;
+        rootFilesAmount = 0;
+        contentHeight = 0.0f;
+        scrollOffset = 0.0f;
+        isDraggingScrollbar = false;
+        contentHeight2 = 0.0f;
+        scrollOffset2 = 0.0f;
+        isDraggingScrollbar2 = false;
+        scrollVelocity = 0.0f;
+        scrollFriction = 0.92f;
+        scrollVelocity2 = 0.0f;
+        scrollFriction2 = 0.92f;
         for (int k=0; k<256; k++) {free(rootFolders[k]);}
-        for (int k=0; k<256; k++) {free(rootFiles[k]);}
-        free(path);
-        return 0;
+        for (int k=0; k<5120; k++) {free(rootFiles[k]);}
+        return path;
     }
 }
 
@@ -1249,6 +1326,7 @@ int main(void) {
     static bool isDraggingScrollbar = false;
     bool autoScrollAllowed = true;
     bool fileSelector = false;
+    char *path2 = NULL;
 
     while (!WindowShouldClose()) {
         float contentHeight = 0.0f;
@@ -1342,7 +1420,10 @@ int main(void) {
             if (fileSelector == true) {
                 if (IsKeyPressed(KEY_ESCAPE)) {fileSelector=false;}
                 Rectangle bounds = {100, 100, 800, 600};
-                GuiFileSelector(bounds, "", font, LIGHTGRAY, GRAY, WHITE);
+                path2 = GuiFileSelector(bounds, "", font, LIGHTGRAY, GRAY, WHITE);
+                if (path2!=NULL && strlen(path2)>1) {
+                    fileSelector=false;
+                }
             }
             DrawTextEx(font, TextFormat("%s", config.userName), (Vector2){1320, 200}, 24, 1.0f, WHITE);
             Rectangle textBounds = { 1326, 278, 248, 388 };
@@ -1444,13 +1525,12 @@ int main(void) {
                         UnloadTexture(friendAvatarArr[i]);
                         friendAvatarArr[i].id = 0;
                     }
-                    char path[128];
-                    snprintf(path, sizeof(path), "avatars/%ld.png", friends[i].userId);
+                    snprintf(path2, sizeof(path2), "avatars/%ld.png", friends[i].userId);
 
-                    if (FileExists(path)) {
-                        Image img = LoadImage(path);
+                    if (FileExists(path2)) {
+                        Image img = LoadImage(path2);
                         if (img.data == NULL) {
-                            printf("[LOAD FRIEND AVATAR] Couldnt load %ld's avatar with %s path\n", friends[i].userId, path);
+                            printf("[LOAD FRIEND AVATAR] Couldnt load %ld's avatar with %s path\n", friends[i].userId, path2);
                         } else {
                             ImageResize(&img, 54, 54);
                             friendAvatarArr[i] = LoadTextureFromImage(img);
@@ -1753,6 +1833,7 @@ int main(void) {
     }
     // Close connection
     close(sock);
+    free(path2);
 
     UnloadTexture(userAvatarTexture);
     UnloadFont(font);
