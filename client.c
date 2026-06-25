@@ -859,9 +859,50 @@ float clamp(float val, float min, float max) {
 }
 
 
-
-
-
+/**
+ * GuiFileSelector by @unnamed_furry
+ *
+ * This method helps the user easily select a file through a simple TUI interface.
+ *
+ * How it works:
+ *
+ * Step 1. The method attempts to read the root directory.
+ *         If it fails, it falls back to the current working directory.
+ *         If successful, it proceeds to step 2.
+ *
+ * Step 2. It scans all subfolders using scandir(), sorts them alphabetically
+ *         and stores the result in the long-lived `rootFolders` array.
+ *
+ * Step 3. It scans all files using the same utility and stores the result
+ *         in the long-lived `rootFiles` array.
+ *
+ * Step 4. The interface is rendered: path bar, folders panel and files panel.
+ *
+ * Step 5. Each panel listens for input events:
+ *         - Left panel (folders): back arrow, mouse back, Delete key — go to parent directory.
+ *         - Right panel (files): double-click or Enter — select the file and proceed to step 6.
+ *
+ * Step 6. When a file is selected (or Escape is pressed), the method enters
+ *         the cleanup phase: frees all temporary memory and returns a pointer
+ *         to the allocated full path string.
+ *
+ * Graphical explanation:
+ *
+ * ```mermaid
+ * flowchart TD
+ *     A[Start: Allocate Memory] --> B[Draw UI Base and Headers]
+ *     B --> C{Try to read root folder?}
+ *     C -->|Success| D[Save folders to rootFolders]
+ *     C -->|Failure| E[Read current directory]
+ *     E --> D
+ *     D --> F[Save files to rootFiles]
+ *     F --> G[Render folders panel + input handling]
+ *     G --> H[Render files panel + input handling]
+ *     H --> I{File selected or Escape?}
+ *     I -->|Yes| J[Cleanup and return path]
+ *     I -->|No| G
+ * ```
+ */
 char *path;
 char *rootFolders[256] = {0};
 typedef struct {
@@ -869,6 +910,7 @@ typedef struct {
     char dateTime[24];
     char size[24];
 } RootFiles;
+RootFiles *rootFiles[5120];
 bool initialized = false;
 float contentHeight = 0.0f;
 float scrollOffset = 0.0f;
@@ -879,7 +921,6 @@ float scrollVelocity = 0.0f;
 float scrollFriction = 0.92f;
 float scrollVelocity2 = 0.0f;
 float scrollFriction2 = 0.92f;
-RootFiles *rootFiles[5120];
 bool readDirFiles = false;
 int rootFoldersAmount = 0;
 int rootFilesAmount = 0;
