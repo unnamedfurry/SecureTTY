@@ -14,7 +14,7 @@
 #include <sys/types.h>
 #include <libgen.h>
 #include "server.h"
-
+#include <sodium.h>
 #include <errno.h>
 
 #define RESET   "\033[0m"
@@ -49,7 +49,8 @@ static pthread_t thread_id;
 #define MAX_AVATAR 64
 #define MAX_DESC 1024
 #define MAX_MESS 2048
-#define MAX_RESPONSE MAX_NAME + MAX_EMAIL + MAX_PASS + MAX_AVATAR + MAX_DESC + MAX_MESS
+#define PACKET_SIZE 524288
+#define MAX_RESPONSE (MAX_NAME + MAX_EMAIL + MAX_PASS + MAX_AVATAR + MAX_DESC + MAX_MESS)
 MYSQL *conn;
 pthread_mutex_t mysql_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -78,29 +79,77 @@ pthread_mutex_t mysql_mutex = PTHREAD_MUTEX_INITIALIZER;
 typedef struct ClientSession {
     long userId;
     int sock;
+    unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+    bool hasSessionKey;
     struct ClientSession *next;
 } ClientSession;
 
-static ClientSession *activeClients = nullptr;
-static pthread_mutex_t clientsMutex = PTHREAD_MUTEX_INITIALIZER;
+ClientSession *activeClients = nullptr;
+pthread_mutex_t clientsMutex = PTHREAD_MUTEX_INITIALIZER;
 
+// Encrypting packet to client
+bool EncryptPacket(ClientSession *session, const char* plaintext, char* out_buffer, size_t max_size) {
+    if (!session->hasSessionKey) {
+        if (strncmp(plaintext, "keyexchange_ok/", 15) == 0) {
+            session->hasSessionKey=true;
+        }
+        strncpy(out_buffer, plaintext, max_size - 1);
+        out_buffer[max_size - 1] = '\0';
+        return true;
+    }
+
+    unsigned char nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES];
+    randombytes_buf(nonce, sizeof(nonce));
+
+    size_t len = strlen(plaintext);
+    unsigned char ct[len + crypto_aead_xchacha20poly1305_ietf_ABYTES + 32];
+    unsigned long long ct_len;
+
+    if (crypto_aead_xchacha20poly1305_ietf_encrypt(ct, &ct_len,
+            (const unsigned char*)plaintext, len,
+            nullptr, 0, nullptr, nonce, session->serverSessionKey) != 0) {
+        return false;
+            }
+
+    char nonce_b64[128], ct_b64[8192];
+    sodium_bin2base64(nonce_b64, sizeof(nonce_b64), nonce, sizeof(nonce), sodium_base64_VARIANT_ORIGINAL);
+    sodium_bin2base64(ct_b64, sizeof(ct_b64), ct, ct_len, sodium_base64_VARIANT_ORIGINAL);
+
+    snprintf(out_buffer, max_size, "enc:%s:%s", nonce_b64, ct_b64);
+    return true;
+}
 bool sendPacket(int sock, const char *data) {
     if (sock <= 0 || data == NULL) return false;
 
-    char packet[132000];
-    int len = snprintf(packet, sizeof(packet), "%s\n", data);
-    if (len < 0 || len >= (int)sizeof(packet)) {
+    char packet[PACKET_SIZE-1];
+    ClientSession *session = nullptr;
+
+    pthread_mutex_lock(&clientsMutex);
+    ClientSession *curr = activeClients;
+    while (curr) {
+        if (curr->sock == sock) {
+            session = curr;
+            break;
+        }
+        curr = curr->next;
+    }
+    pthread_mutex_unlock(&clientsMutex);
+
+    if (!session) return false;
+
+    if (!EncryptPacket(session, data, packet, sizeof(packet)-1)) {
         time_t rawtime;
         struct tm *info;
         char buffer[80];
         time(&rawtime);
         info = localtime(&rawtime);
         strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-        printf("[%s][SEND] Packet too big or error\n", buffer);
+        printf("[%s][SEND] Encryption failed\n", buffer);
         return false;
     }
 
-    int sent = send(sock, packet, len, MSG_NOSIGNAL);
+    packet[strlen(packet)]='\n';
+    int sent = send(sock, packet, strlen(packet), MSG_NOSIGNAL);
     if (sent < 0) {
         if (errno == EPIPE || errno == ECONNRESET) {
             time_t rawtime;
@@ -121,6 +170,15 @@ bool sendPacket(int sock, const char *data) {
         }
         return false;
     }
+
+    time_t rawtime;
+    struct tm *info;
+    char buffer[80];
+    time(&rawtime);
+    info = localtime(&rawtime);
+    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+    printf("[%s][SEND] Sent successfully: %s (sock=%d)\n", buffer, packet, sock);
+
     return true;
 }
 // register client (after authorization)
@@ -158,6 +216,8 @@ void registerClient(long userId, int sock) {
     ClientSession *session = malloc(sizeof(ClientSession));
     session->userId = userId;
     session->sock = sock;
+    session->hasSessionKey = false;
+    memset(session->serverSessionKey, 0, sizeof(session->serverSessionKey));
     session->next = activeClients;
     activeClients = session;
 
@@ -465,35 +525,31 @@ void getChatHistory(long userId, long friendId, int sock) {
 }
 
 bool saveUserToDB(long userId, const char *username, const char *email,
-                  const char *passwordHashHex, const char *avatarUrl, const char *profileDesc) {
+                  const char *avatarUrl, const char *profileDesc) {
 
     char esc_username[MAX_NAME*2 + 10];
     char esc_email[MAX_EMAIL*2 + 10];
-    char esc_hash[SHA256_DIGEST_LENGTH*2 + 10];
     char esc_avatar[MAX_AVATAR*2 + 10];
     char esc_desc[MAX_DESC*2 + 100];
 
     pthread_mutex_lock(&mysql_mutex);
     mysql_real_escape_string(conn, esc_username, username, strlen(username));
     mysql_real_escape_string(conn, esc_email,    email,    strlen(email));
-    mysql_real_escape_string(conn, esc_hash,     passwordHashHex, strlen(passwordHashHex));
     mysql_real_escape_string(conn, esc_avatar,   avatarUrl, strlen(avatarUrl));
     mysql_real_escape_string(conn, esc_desc,     profileDesc, strlen(profileDesc));
 
     char query[8192];
     int written = snprintf(query, sizeof(query),
-        "INSERT INTO users (userId, username, email, passwordHash, avatarUrl, profileDesc) "
-        "VALUES (%ld, '%s', '%s', '%s', '%s', '%s') "
+        "INSERT INTO users (userId, username, email, avatarUrl, profileDesc) "
+        "VALUES (%ld, '%s', '%s', '%s', '%s') "
         "ON DUPLICATE KEY UPDATE "
         "username=VALUES(username), "
         "email=VALUES(email), "
-        "passwordHash=VALUES(passwordHash), "
         "avatarUrl=VALUES(avatarUrl), "
         "profileDesc=VALUES(profileDesc)",
         userId,
         esc_username,
         esc_email,
-        esc_hash,
         esc_avatar,
         esc_desc);
 
@@ -851,12 +907,44 @@ unsigned char* Base64Decode(const char* input, int* out_len) {
 }
 
 bool finishedResponse = false;
+// Decrypting received packet
+bool DecryptPacket(ClientSession *session, const char* input, char* out_plain, size_t max_size) {
+    if (strncmp(input, "enc:", 4) != 0) {
+        strncpy(out_plain, input, max_size - 1);
+        out_plain[max_size - 1] = '\0';
+        return true;
+    }
+
+    char *nonce_b64 = strtok((char*)(input + 4), ":");
+    char *ct_b64 = strtok(nullptr, ":");
+
+    if (!nonce_b64 || !ct_b64) return false;
+
+    unsigned char nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES];
+    unsigned char ct[8192];
+    size_t nlen = 0, clen = 0;
+
+    sodium_base642bin(nonce, sizeof(nonce), nonce_b64, strlen(nonce_b64), nullptr, &nlen, nullptr, sodium_base64_VARIANT_ORIGINAL);
+    sodium_base642bin(ct, sizeof(ct), ct_b64, strlen(ct_b64), nullptr, &clen, nullptr, sodium_base64_VARIANT_ORIGINAL);
+
+    unsigned char decrypted[8192] = {0};
+    unsigned long long decrypted_len;
+
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt(decrypted, &decrypted_len, nullptr,
+            ct, clen, nullptr, 0, nonce, session->serverSessionKey) != 0) {
+        return false;
+            }
+
+    strncpy(out_plain, (char*)decrypted, max_size - 1);
+    out_plain[max_size - 1] = '\0';
+    return true;
+}
 void* acceptMessage(void *arg) {
     int sock = *(int*)arg;
     free(arg);
-    char response[132000] = {0};
+    char response[PACKET_SIZE] = {0};
     char localBuf[BUFFER_SIZE];
-    char fullMessage[132000];
+    char fullMessage[PACKET_SIZE];
     int totalReceived;
 
     while (1) {
@@ -888,6 +976,7 @@ void* acceptMessage(void *arg) {
         }
 
         fullMessage[strcspn(fullMessage, "\n")] = '\0';
+
         {
             time_t rawtime;
             struct tm *info;
@@ -897,6 +986,22 @@ void* acceptMessage(void *arg) {
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
             printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Client said (full message, %d bytes): %s\n", buffer, totalReceived, fullMessage);
         }
+
+        char decrypted[PACKET_SIZE] = {0};
+        pthread_mutex_lock(&clientsMutex);
+        ClientSession *curr = activeClients;
+        while (curr) {
+            if (curr->sock == sock) {
+                pthread_mutex_unlock(&clientsMutex);
+                if (DecryptPacket(curr, fullMessage, decrypted, sizeof(decrypted))) {
+                    strncpy(fullMessage, decrypted, sizeof(decrypted)-1);
+                    break;
+                }
+                break;
+            }
+            curr = curr->next;
+        }
+        pthread_mutex_unlock(&clientsMutex);
 
         if (strcmp(fullMessage, "test/") == 0) {
             strcpy(response, "ok\n");
@@ -932,7 +1037,7 @@ void* acceptMessage(void *arg) {
                     printf("[%s][RECEIVE MESSAGE] Message saved: %ld -> %ld\n", buffer, senderId, receiverId);
                 }
                 char pushPacket[BUFFER_SIZE];
-                snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s\n", messageId, senderId, parts[3], "now");
+                snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s", messageId, senderId, parts[3], "now");
 
                 if (!pushToUser(receiverId, pushPacket)) {
                     time_t rawtime;
@@ -959,6 +1064,7 @@ void* acceptMessage(void *arg) {
             // generating 10-digit number from 1000000000 to 9999999999
             long id = 1000000000L + (rand() % 9000000000L);
             sprintf(response, "createId/user/%ld\n", id);
+            send(sock, response, strlen(response), 0);
             time_t rawtime;
             struct tm *info;
             char buffer[80];
@@ -966,12 +1072,14 @@ void* acceptMessage(void *arg) {
             info = localtime(&rawtime);
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
             printf("[%s][CREATE USER ID] New Id generated for user: %ld\n", buffer, id);
+            memset(response, 0, sizeof(response));
+            continue;
         }
         else if (strncmp(fullMessage, "createId/message", 16) == 0) {
             srand(time(NULL) ^ clock());
             // generating 10-digit number from 1000000000 to 9999999999
             long id = 1000000000L + (rand() % 9000000000L);
-            sprintf(response, "createId/message/%ld\n", id);
+            sprintf(response, "createId/message/%ld", id);
             time_t rawtime;
             struct tm *info;
             char buffer[80];
@@ -982,16 +1090,16 @@ void* acceptMessage(void *arg) {
         }
         else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
 
-            char *parts[6] = {0};
+            char *parts[5] = {0};
             int count = 0;
             char *token = strtok(fullMessage + 13, "\x1E");
 
-            while (token && count < 6) {
+            while (token && count < 5) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
             }
 
-            if (count >= 6) {
+            if (count >= 5) {
                 long uid = strtol(parts[0], nullptr, 10);
                 time_t rawtime;
                 struct tm *info;
@@ -1001,18 +1109,18 @@ void* acceptMessage(void *arg) {
                 strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
                 printf("[%s][SAVE PROFILE] received for %ld\n", buffer, uid);
                 bool success = saveUserToDB(uid,
-                                            parts[1], parts[2], parts[3],
-                                            parts[4], parts[5]);
+                                            parts[1], parts[2], parts[3], parts[4]);
 
                 if (success) {
-                    sendPacket(sock, "save-profile/ok");
+                    snprintf(response, sizeof(response), "save-profile/ok");
                 } else {
-                    sendPacket(sock, "save-profile/error");
+                    snprintf(response, sizeof(response), "save-profile/error");
                 }
             } else {
-                sendPacket(sock, "save-profile/badformat");
+                snprintf(response, sizeof(response), "save-profile/badformat");
             }
         }
+
         else if (strncmp(fullMessage, "getFriendsList/", 15) == 0) {
             long userId = strtol(fullMessage + 15, nullptr, 10);
             if (userId <= 0) continue;
@@ -1033,15 +1141,13 @@ void* acceptMessage(void *arg) {
                 strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
                 printf("[%s][GET FRIEND LIST] Failed to query friends for user %ld: %s\n", buffer, userId, mysql_error(conn));
                 snprintf(response, sizeof(response), "getFriendList/error");
-                sendPacket(sock, response);
-                continue;
+                goto onfail;
             }
 
             MYSQL_RES *res = mysql_store_result(conn);
             if (res == NULL) {
                 snprintf(response, sizeof(response), "getFriendList/empty");
-                sendPacket(sock, response);
-                continue;
+                goto onfail;
             }
 
             MYSQL_ROW row;
@@ -1168,10 +1274,10 @@ void* acceptMessage(void *arg) {
                     pushToUser(senderId, "requestFriendUpdate/");
                     pushToUser(receiverId, "requestFriendUpdate/");
                 } else {
-                    sendPacket(sock, "acceptFriend/error");
+                    snprintf(response, sizeof(response), "acceptFriend/error");
                 }
             } else {
-                sendPacket(sock, "acceptFriend/badformat");
+                snprintf(response, sizeof(response), "acceptFriend/badformat");
             }
         }
         else if (strncmp(fullMessage, "updateClient/", 13) == 0) {
@@ -1269,9 +1375,7 @@ void* acceptMessage(void *arg) {
                 }
             } else {
                 // if theres no avatar - sending null
-                //char response1[64];
                 snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E", reciever);
-                //sendPacket(sock, response1);
                 time_t rawtime;
                 struct tm *info;
                 char buffer[80];
@@ -1383,7 +1487,7 @@ void* acceptMessage(void *arg) {
             char *ptr = fullMessage + 22;
             long userId = strtol(ptr, &ptr, 10);
             { // FRIEND REQUESTS
-                int size = 132000;
+                int size = PACKET_SIZE;
                 int offset = 0;
                 offset += snprintf(response+offset, size-offset, "newFriendRequest/");
 
@@ -1430,7 +1534,39 @@ void* acceptMessage(void *arg) {
                 printf("[%s][GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", buffer, userId, response);
             }
         }
+        else if (strncmp(fullMessage, "keyexchange/", 12) == 0) {
+            char *clientPubB64 = fullMessage + 12;
 
+            unsigned char clientPubKey[crypto_box_PUBLICKEYBYTES] = {0};
+            size_t decoded_len = 0;
+
+            if (sodium_base642bin(clientPubKey, sizeof(clientPubKey), clientPubB64,
+                strlen(clientPubB64), nullptr, &decoded_len, nullptr,
+                sodium_base64_VARIANT_ORIGINAL) != 0 ||
+                decoded_len != crypto_box_PUBLICKEYBYTES) {
+
+                printf("[CRYPTO] Bad public key from client\n");
+                snprintf(response, sizeof(response), "keyexchange/error");
+                goto onfail;
+                }
+
+            unsigned char serverPub[crypto_box_PUBLICKEYBYTES] = {0};
+            unsigned char serverPriv[crypto_box_SECRETKEYBYTES] = {0};
+            crypto_box_keypair(serverPub, serverPriv);
+
+            if (curr) {
+                if (crypto_box_beforenm(curr->serverSessionKey, clientPubKey, serverPriv) == 0) {
+                    printf("[CRYPTO] Server session key: %p\n", (void*)curr->serverSessionKey);
+                } else {
+                    printf(RED "[CRYPTO] crypto_box_beforenm failed on server\n" RESET);
+                }
+                char pub_b64[128] = {0};
+                sodium_bin2base64(pub_b64, sizeof(pub_b64), serverPub, sizeof(serverPub), sodium_base64_VARIANT_ORIGINAL);
+                snprintf(response, sizeof(response), "keyexchange_ok/%s", pub_b64);
+            }
+        }
+
+        onfail:
         if (strlen(response) > 0) {
             sendPacket(sock, response);
             time_t rawtime;
@@ -1439,8 +1575,8 @@ void* acceptMessage(void *arg) {
             time(&rawtime);
             info = localtime(&rawtime);
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-            printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Sent response for request (sock %d): %s -> %s\n", buffer, sock, fullMessage, response);
-            memset(response, 0, 132000);
+            printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Responding for request (sock %d): %s -> %s\n", buffer, sock, fullMessage, response);
+            memset(response, 0, PACKET_SIZE);
         }
     }
 
@@ -1493,7 +1629,6 @@ int main(void) {
             "userId BIGINT UNSIGNED NOT NULL PRIMARY KEY,"          // main column
             "username VARCHAR(24) NOT NULL,"
             "email VARCHAR(24) NOT NULL,"                           // email
-            "passwordHash VARCHAR(64) NOT NULL,"                    // SHA-256 in hex = 64 syms
             "avatarUrl VARCHAR(64) NOT NULL DEFAULT '',"
             "profileDesc VARCHAR(1025) NOT NULL DEFAULT ''"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",

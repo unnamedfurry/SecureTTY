@@ -4,6 +4,7 @@
 
 #ifndef UNCHAT_SERVER_H
 #define UNCHAT_SERVER_H
+// MYSQL props
 #define HOST "localhost"
 #define MYSQL_USER "root"
 #define MYSQL_PASSWORD "681137"

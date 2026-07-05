@@ -4,6 +4,7 @@
 
 #ifndef UNCHAT_CLIENT_H
 #define UNCHAT_CLIENT_H
+// CONNECTION props
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 63321
 #endif //UNCHAT_CLIENT_H
