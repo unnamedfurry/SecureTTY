@@ -183,14 +183,22 @@ bool sendPacket(int sock, const char *data) {
 }
 // register client (after authorization)
 void registerClient(long userId, int sock) {
-    if (sock <= 0) return;
-
     pthread_mutex_lock(&clientsMutex);
 
-    // removing old sessions
+    // looking for current (anonymous) session by sock
+    ClientSession *mine = nullptr;
+    for (ClientSession *c = activeClients; c; c = c->next)
+        if (c->sock == sock) { mine = c; break; }
+
+    // removing old stranger sessions with same userId (is not current sock)
     ClientSession *curr = activeClients, *prev = nullptr;
     while (curr) {
-        if (curr->userId == userId) {
+        if (curr->userId == userId && curr->sock != sock) {
+            close(curr->sock);
+            if (prev) prev->next = curr->next; else activeClients = curr->next;
+            ClientSession *tofree = curr;
+            curr = curr->next;
+            free(tofree);
             time_t rawtime;
             struct tm *info;
             char buffer[80];
@@ -198,29 +206,23 @@ void registerClient(long userId, int sock) {
             info = localtime(&rawtime);
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
             printf("[%s][NETWORK] Replacing old session for user %ld (old sock=%d)\n", buffer, userId, curr->sock);
-            close(curr->sock);  // closing old
-
-            if (prev) prev->next = curr->next;
-            else activeClients = curr->next;
-
-            ClientSession *tofree = curr;
-            curr = curr->next;
-            free(tofree);
             continue;
         }
-        prev = curr;
-        curr = curr->next;
+        prev = curr; curr = curr->next;
     }
 
-    // adding new
-    ClientSession *session = malloc(sizeof(ClientSession));
-    session->userId = userId;
-    session->sock = sock;
-    session->hasSessionKey = false;
-    memset(session->serverSessionKey, 0, sizeof(session->serverSessionKey));
-    session->next = activeClients;
-    activeClients = session;
-
+    if (mine) {
+        mine->userId = userId;           // key and hasSessionKey are saved
+    } else {
+        // fallback for old protocol / client without keyexchange
+        ClientSession *session = malloc(sizeof(ClientSession));
+        session->userId = userId;
+        session->sock = sock;
+        session->hasSessionKey = false;
+        memset(session->serverSessionKey, 0, sizeof(session->serverSessionKey));
+        session->next = activeClients;
+        activeClients = session;
+    }
     time_t rawtime;
     struct tm *info;
     char buffer[80];
@@ -525,31 +527,45 @@ void getChatHistory(long userId, long friendId, int sock) {
 }
 
 bool saveUserToDB(long userId, const char *username, const char *email,
-                  const char *avatarUrl, const char *profileDesc) {
-
+                  const char *password, const char *avatarUrl, const char *profileDesc){
+    char passwordHashed[crypto_pwhash_STRBYTES];
     char esc_username[MAX_NAME*2 + 10];
     char esc_email[MAX_EMAIL*2 + 10];
+    char esc_password[crypto_pwhash_STRBYTES*2+10];
     char esc_avatar[MAX_AVATAR*2 + 10];
     char esc_desc[MAX_DESC*2 + 100];
+    bool ok = crypto_pwhash_str(passwordHashed, password, strlen(password),
+                              crypto_pwhash_OPSLIMIT_MODERATE,
+                              crypto_pwhash_MEMLIMIT_MODERATE) == 0;
+    if (!ok) {
+        time_t rawtime;
+        struct tm *info;
+        char buffer[80];
+        time(&rawtime);
+        info = localtime(&rawtime);
+        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        printf("[%s][FATAL][SAVE USER TO DB] Failed to calculate pwhashed password for user %s\n", buffer, username);
+        return false;
+    }
 
     pthread_mutex_lock(&mysql_mutex);
     mysql_real_escape_string(conn, esc_username, username, strlen(username));
     mysql_real_escape_string(conn, esc_email,    email,    strlen(email));
+    mysql_real_escape_string(conn, esc_password, passwordHashed, strlen(passwordHashed));
     mysql_real_escape_string(conn, esc_avatar,   avatarUrl, strlen(avatarUrl));
     mysql_real_escape_string(conn, esc_desc,     profileDesc, strlen(profileDesc));
 
     char query[8192];
     int written = snprintf(query, sizeof(query),
-        "INSERT INTO users (userId, username, email, avatarUrl, profileDesc) "
-        "VALUES (%ld, '%s', '%s', '%s', '%s') "
+        "INSERT INTO users (userId, username, email, passwordHash, avatarUrl, profileDesc) "
+        "VALUES (%ld, '%s', '%s', '%s', '%s', '%s') "
         "ON DUPLICATE KEY UPDATE "
-        "username=VALUES(username), "
-        "email=VALUES(email), "
         "avatarUrl=VALUES(avatarUrl), "
         "profileDesc=VALUES(profileDesc)",
         userId,
         esc_username,
         esc_email,
+        esc_password,
         esc_avatar,
         esc_desc);
 
@@ -1090,16 +1106,16 @@ void* acceptMessage(void *arg) {
         }
         else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
 
-            char *parts[5] = {0};
+            char *parts[6] = {0};
             int count = 0;
             char *token = strtok(fullMessage + 13, "\x1E");
 
-            while (token && count < 5) {
+            while (token && count < 6) {
                 parts[count++] = token;
                 token = strtok(nullptr, "\x1E");
             }
 
-            if (count >= 5) {
+            if (count >= 6) {
                 long uid = strtol(parts[0], nullptr, 10);
                 time_t rawtime;
                 struct tm *info;
@@ -1109,15 +1125,18 @@ void* acceptMessage(void *arg) {
                 strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
                 printf("[%s][SAVE PROFILE] received for %ld\n", buffer, uid);
                 bool success = saveUserToDB(uid,
-                                            parts[1], parts[2], parts[3], parts[4]);
+                                            parts[1], parts[2], parts[3],
+                                            parts[4], parts[5]);
 
                 if (success) {
                     snprintf(response, sizeof(response), "save-profile/ok");
                 } else {
                     snprintf(response, sizeof(response), "save-profile/error");
+                    // TODO: return current server profile
                 }
             } else {
                 snprintf(response, sizeof(response), "save-profile/badformat");
+                // TODO: return current server profile
             }
         }
 
@@ -1305,6 +1324,61 @@ void* acceptMessage(void *arg) {
             printf("[%s][REGISTER CLIENT] Received for client/user %ld\n", buffer, userId);
             if (userId > 0) {
                 registerClient(userId, sock);
+                continue;
+            }
+        }
+        else if (strncmp(fullMessage, "login/", 6) == 0) {
+            char *parts[3] = {0};
+            int count = 0;
+            char *token = strtok(fullMessage + 6, "\x1E");
+            while (token && count < 3) {
+                parts[count++] = token;
+                token = strtok(nullptr, "\x1E");
+            }
+            long userId = strtol(parts[0], nullptr, 10);
+            char esc_email[MAX_EMAIL*2 + 10] = {0};
+            char password[crypto_pwhash_STRBYTES+10] = {0};
+            pthread_mutex_lock(&mysql_mutex);
+            mysql_real_escape_string(conn, esc_email,    parts[1],    strlen(parts[1]));
+            char query[256];
+            snprintf(query, 256, "SELECT passwordHash FROM users WHERE userId = %ld AND email = '%s' LIMIT 1", userId, esc_email);
+            if (mysql_query(conn, query)) {
+                printf("[REGISTER CLIENT] Query Error: %s\n", mysql_error(conn));
+                pthread_mutex_unlock(&mysql_mutex);
+                unregisterClient(sock);
+                close(sock);
+            }
+            MYSQL_RES *result = mysql_store_result(conn);
+            if (result == NULL) {
+                mysql_free_result(result);
+                pthread_mutex_unlock(&mysql_mutex);
+                unregisterClient(sock);
+                close(sock);
+            }
+            MYSQL_ROW row = mysql_fetch_row(result);
+            if (row != NULL && row[0] != NULL) {
+                strncpy(password, row[0], sizeof(password) - 1);
+            } else {
+                printf("[REGISTER CLIENT] No matching user found.\n");
+            }
+            mysql_free_result(result);
+            pthread_mutex_unlock(&mysql_mutex);
+            bool ok = false;
+            if (strlen(password) > 0) {ok = crypto_pwhash_str_verify(password, parts[2], strlen(parts[2])) == 0;}
+
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf("[%s][REGISTER CLIENT] Received for client/user %ld\n", buffer, userId);
+            if (userId > 0 && ok == true) {
+                registerClient(userId, sock);
+                continue;
+            } else {
+                unregisterClient(sock);
+                close(sock);
                 continue;
             }
         }
@@ -1553,16 +1627,23 @@ void* acceptMessage(void *arg) {
             unsigned char serverPub[crypto_box_PUBLICKEYBYTES] = {0};
             unsigned char serverPriv[crypto_box_SECRETKEYBYTES] = {0};
             crypto_box_keypair(serverPub, serverPriv);
+            ClientSession *target = curr; // early found by sock, could be NULL
+            if (!target) {
+                target = malloc(sizeof(ClientSession));
+                target->userId = 0;               // not authenticated yet
+                target->sock = sock;
+                target->hasSessionKey = false;
+                target->next = activeClients;
+                activeClients = target;
+            }
 
-            if (curr) {
-                if (crypto_box_beforenm(curr->serverSessionKey, clientPubKey, serverPriv) == 0) {
-                    printf("[CRYPTO] Server session key: %p\n", (void*)curr->serverSessionKey);
-                } else {
-                    printf(RED "[CRYPTO] crypto_box_beforenm failed on server\n" RESET);
-                }
+            if (crypto_box_beforenm(target->serverSessionKey, clientPubKey, serverPriv) == 0) {
+                printf("[CRYPTO] Server session key: %p\n", (void*)target->serverSessionKey);
                 char pub_b64[128] = {0};
                 sodium_bin2base64(pub_b64, sizeof(pub_b64), serverPub, sizeof(serverPub), sodium_base64_VARIANT_ORIGINAL);
-                snprintf(response, sizeof(response), "keyexchange_ok/%s", pub_b64);
+                snprintf(response, sizeof(response), "keyexchange/ok/%s", pub_b64);
+            } else {
+                printf(RED "[CRYPTO] crypto_box_beforenm failed on server\n" RESET);
             }
         }
 
@@ -1628,7 +1709,8 @@ int main(void) {
         "CREATE TABLE IF NOT EXISTS users ("
             "userId BIGINT UNSIGNED NOT NULL PRIMARY KEY,"          // main column
             "username VARCHAR(24) NOT NULL,"
-            "email VARCHAR(24) NOT NULL,"                           // email
+            "email VARCHAR(24) NOT NULL,"
+            "passwordHash VARCHAR(256) NOT NULL,"
             "avatarUrl VARCHAR(64) NOT NULL DEFAULT '',"
             "profileDesc VARCHAR(1025) NOT NULL DEFAULT ''"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;",

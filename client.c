@@ -50,6 +50,7 @@ typedef struct {
     long userId;
     char userName[MAX_NAME+1];
     char email[MAX_EMAIL+1];
+    char passwordHash[MAX_PASS];
     char avatarUrl[MAX_AVATAR+1];
     char profileDescription[MAX_DESC+1];
 } Config;
@@ -78,7 +79,7 @@ static Texture2D pendingFriendAvatarArr[100] = {0};
 bool requestedAvatarUpdate=false;
 bool hasFriendRequests = false;
 
-char passwordInput[MAX_PASS+1] = {0};
+char masterPassword[MAX_PASS+1] = {0};
 unsigned char clientSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
 bool hasSessionKey = false;
 bool sentKeyExchange = false;
@@ -141,6 +142,7 @@ static pthread_t thread_id;
 static int sock = -1;
 static struct sockaddr_in serv_addr;
 bool connected = false;
+bool initedNetwork = false;
 
 void sendMessage(const char *message);
 bool LoadEncryptedConfig(Config *cfg, const char* master_password);
@@ -213,7 +215,7 @@ void* recieveMessage(void* arg) {
                 printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
                 printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
 
-                if (strncmp(fullMessage, "keyexchange_ok/", 15) == 0 && hasSessionKey==false) {
+                if (strncmp(fullMessage, "keyexchange/ok/", 15) == 0 && hasSessionKey==false) {
                     char *serverPubB64 = fullMessage + 15;
 
                     unsigned char serverPub[crypto_box_PUBLICKEYBYTES];
@@ -240,7 +242,7 @@ void* recieveMessage(void* arg) {
                 }
                 if (strncmp(fullMessage, "save-profile/", 13) == 0) {
                     printf("[SAVE PROFILE] Profile successfully saved on server\n");
-                    LoadEncryptedConfig(&config, passwordInput);
+                    LoadEncryptedConfig(&config, masterPassword);
                     if (config.userId == 0) {
                         printf(cRED "[FATAL]" RESET "[SAVE PROFILE] User ID is 0, shutting down.\n");
                         exit(4);
@@ -254,7 +256,6 @@ void* recieveMessage(void* arg) {
                         char msgBuf[BUFFER_SIZE];
                         snprintf(msgBuf, sizeof(msgBuf), "registerClient/%ld", newId);
                         sendMessage(msgBuf);
-
                     }
                 }
                 else if (strncmp(fullMessage, "createId/message/", 17) == 0) {
@@ -628,6 +629,21 @@ bool initNetwork(void) {
     if (pthread_create(&thread_id, nullptr, recieveMessage, NULL) != 0) {
         printf(cRED "[FATAL | NETWORK] Failed to create listener thread\n" RESET);
     }
+
+    // Setting up session key
+    if (sodium_init() < 0) {
+        printf(cRED "[FATAL]" RESET "[CRYPTO] Failed to initialize sodium, exiting.\n");
+        exit(5);
+    }
+    crypto_box_keypair(clientPub, clientPriv);
+    // Sending keys and awaiting for response
+    char packet1[512];
+    char pub_b64[312];
+    sodium_bin2base64(pub_b64, sizeof(pub_b64), clientPub, sizeof(clientPub), sodium_base64_VARIANT_ORIGINAL);
+    snprintf(packet1, sizeof(packet1), "keyexchange/%s\n", pub_b64);
+    ssize_t sent = send(sock, packet1, strlen(packet1), 0);
+    if (sent < 0) {initedNetwork=false; connected = false;}
+    sentKeyExchange=true;
     return true;
 }
 // Encrypting key before sending
@@ -667,33 +683,32 @@ void sendMessage(const char *message) {
         if (!initNetwork()) return;
     }
 
+    // until the key is agreed upon, block all outgoing messages except the key exchange itself
+    // (the key exchange is sent directly from initNetwork(), not via sendMessage)
+    int waited = 0;
+    while (!hasSessionKey && connected) {
+        usleep(5000);
+        waited += 5;
+        if (waited > 5000) { // 5 sec — if the server doesnt respond, dont hang forever
+            printf(cRED "[NETWORK] Timeout waiting for session key, message dropped: %s\n" RESET, message);
+            return;
+        }
+    }
+    if (!connected) return; // connection dropped while waiting
+
     char packet[PACKET_SIZE+1];
-    if (EncryptPacket(message, packet, sizeof(packet)-1) && hasSessionKey==false && sentKeyExchange==false) {
+    if (!EncryptPacket(message, packet, sizeof(packet)-1)) {
         printf("[CRYPTO] Failed to encrypt message.\n");
+        return;
     }
 
     packet[strlen(packet)]='\n';
     if (send(sock, packet, strlen(packet), 0) < 0) {
         printf("[NETWORK] Send error\n");
         connected = false;
+        initedNetwork=false;
     } else {
         usleep(5000);
-    }
-
-    if (strncmp(message, "registerClient/", 15) == 0 && hasSessionKey==false && sentKeyExchange==false) {
-        // Setting up session key
-        if (sodium_init() < 0) {
-            printf(cRED "[FATAL]" RESET "[CRYPTO] Failed to initialize sodium, exiting.\n");
-            exit(5);
-        }
-        crypto_box_keypair(clientPub, clientPriv);
-        // Sending keys and awaiting for response
-        char packet1[512];
-        char pub_b64[312];
-        sodium_bin2base64(pub_b64, sizeof(pub_b64), clientPub, sizeof(clientPub), sodium_base64_VARIANT_ORIGINAL);
-        snprintf(packet1, sizeof(packet1), "keyexchange/%s\n", pub_b64);
-        send(sock, packet1, strlen(packet1), 0);
-        sentKeyExchange=true;
     }
     printf("[SEND] Sent message: %s", packet);
 }
@@ -784,6 +799,8 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
                 strncpy(cfg->userName, value, MAX_NAME);
             } else if (strcmp(key, "email") == 0) {
                 strncpy(cfg->email, value, MAX_EMAIL);
+            } else if (strcmp(key, "passwordHash") == 0) {
+                strncpy(cfg->passwordHash, value, SHA256_DIGEST_LENGTH);
             } else if (strcmp(key, "avatarUrl") == 0) {
                 strncpy(cfg->avatarUrl, value, MAX_AVATAR);
             } else if (strcmp(key, "profileDescription") == 0) {
@@ -828,6 +845,7 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
     fprintf(tmp, "userId=%ld\n", cfg->userId);
     fprintf(tmp, "userName=%s\n", cfg->userName);
     fprintf(tmp, "email=%s\n", cfg->email);
+    fprintf(tmp, "passwordHash=%s\n", cfg->passwordHash);
     fprintf(tmp, "avatarUrl=%s\n", strlen(cfg->avatarUrl)==0 ? "null" : cfg->avatarUrl);
     fprintf(tmp, "profileDescription=%s\n", strlen(cfg->profileDescription)==0 ? "null" : cfg->profileDescription);
 
@@ -856,19 +874,17 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
     // Sending sata to server
     char message[2048] = {0};
     snprintf(message, sizeof(message),
-             "save-profile/%ld\x1E%s\x1E%s\x1E%s\x1E%s",
+             "save-profile/%ld\x1E%s\x1E%s\x1E%s\x1E%s\x1E%s",
              cfg->userId,
              cfg->userName,
              cfg->email,
+             cfg->passwordHash,
              cfg->avatarUrl,
              cfg->profileDescription);
 
     printf("[SAVE ENCRYPTED CONFIG] Sent data to server.\n");
     sendMessage(message);
     return true;
-}
-void HashPassword(const char* password, unsigned char* outHash) {
-    SHA256((const unsigned char*)password, strlen(password), outHash);
 }
 
 
@@ -1502,7 +1518,6 @@ int main(void) {
     GuiSetFont(font);
     GuiSetStyle(DEFAULT, TEXT_SIZE, 24);
 
-    bool initedNetwork = false;
     static int activeField=-1;
     char newDesc[1025] = "";
     char message[2049] = "";
@@ -1530,6 +1545,7 @@ int main(void) {
     bool autoScrollAllowed = true;
     bool fileSelector = false;
     char *path2 = NULL;
+    char passwordInput[MAX_PASS+1] = {0};
 
     float process = 0.0f;
     bool userAgreed = false;
@@ -1578,21 +1594,21 @@ int main(void) {
                     }
                     DrawTextEx(font, "Я готов", (Vector2){170, 340}, 24, 2, WHITE);
                 } else {
-                    if (GuiTextBox((Rectangle){100, 300, 500, 100}, passwordInput, MAX_PASS, editMode==1)) {
+                    if (GuiTextBox((Rectangle){100, 300, 500, 100}, masterPassword, MAX_PASS, editMode==1)) {
                         editMode = (editMode == 1) ? -1 : 1;
                         wrongPass=false;
                     }
                     if (IsKeyPressed(KEY_ENTER)) {
-                        if (strlen(passwordInput)>8) {
+                        if (strlen(masterPassword)>6) {
                             if (FileExists(CONFIG_FILE)) {
-                                if (LoadEncryptedConfig(&config, passwordInput)) {
+                                if (LoadEncryptedConfig(&config, masterPassword)) {
                                     initedNetwork = initNetwork();
                                     usleep(1000000);
                                     memset(friends, 0, sizeof(friends));
                                     memset(pendingFriends, 0, sizeof(pendingFriends));
                                     if (config.userId != 0) {
                                         char msgBuf[BUFFER_SIZE] = {0};
-                                        snprintf(msgBuf, sizeof(msgBuf), "registerClient/%ld", config.userId);
+                                        snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s", config.userId, config.email, config.passwordHash);
                                         sendMessage(msgBuf);
                                         again:
                                         if (hasSessionKey) {
@@ -1608,6 +1624,7 @@ int main(void) {
                                     if (config.isFirstUsed) {
                                         strcpy(config.userName, "");
                                         strcpy(config.email, "");
+                                        strcpy(config.passwordHash, "");
                                         strcpy(config.profileDescription, "");
                                         config.isFirstUsed=true;
                                         currentState=STATE_FIRST_SETUP;
@@ -1646,19 +1663,18 @@ int main(void) {
                 if (GuiTextBox((Rectangle){100, 220, 400, 40}, config.email, MAX_EMAIL, activeField==1)) {
                     activeField = (activeField == 1) ? -1 : 1;
                 }
-                if (GuiTextBox((Rectangle){100, 290, 400, 40}, config.profileDescription, MAX_DESC, activeField==3)) {
+                if (GuiTextBox((Rectangle){100, 290, 400, 40}, config.passwordHash, MAX_PASS, activeField==2)) {
+                    activeField = (activeField == 2) ? -1 : 2;
+                }
+                if (GuiTextBox((Rectangle){100, 360, 400, 40}, config.profileDescription, MAX_DESC, activeField==3)) {
                     activeField = (activeField == 3) ? -1 : 3;
                 }
                 DrawTextEx(font,"Юзернейм", (Vector2){520, 160}, 20, 3, LIGHTGRAY);
                 DrawTextEx(font, "Email", (Vector2){520, 230}, 20, 3, LIGHTGRAY);
-                DrawTextEx(font, "Описание профиля (опционально)", (Vector2){520, 300}, 20, 3, LIGHTGRAY);
+                DrawTextEx(font, "Пароль", (Vector2){520, 300}, 20, 3, LIGHTGRAY);
+                DrawTextEx(font, "Описание профиля (опционально)", (Vector2){520, 370}, 20, 3, LIGHTGRAY);
 
-                if (GuiButton((Rectangle){100, 370, 200, 50}, "Сохранить и продолжить") || IsKeyPressed(KEY_ENTER)) {
-                    if (strlen(config.userName) < 3) {
-                        // log error?
-                        continue;
-                    }
-
+                if (GuiButton((Rectangle){100, 450, 200, 50}, "Сохранить и продолжить") || IsKeyPressed(KEY_ENTER)) {
                     config.isFirstUsed = false;
 
                     sendMessage("createId/user");
@@ -1674,8 +1690,13 @@ int main(void) {
                     strncpy(config.avatarUrl, "null", 4);
                     if (strlen(config.avatarUrl)==0) strncpy(config.avatarUrl, "null", 4);
 
-                    SaveEncryptedConfig(&config, passwordInput);
+                    SaveEncryptedConfig(&config, masterPassword);
                     currentState=STATE_MAIN_CHAT;
+                }
+                if (initedNetwork == false) {
+                    DrawRectangle(1, 900/2-100, 1600, 200, GRAY);
+                    DrawRectangleLines(1, 900/2-100, 1599, 199, RED);
+                    DrawTextEx(font, "Потеряно соединение с сервером!", (Vector2){1600/2-470, 900/2-20}, 60, 2, RED);
                 }
                 break;
             case STATE_MAIN_CHAT:
@@ -1732,7 +1753,7 @@ int main(void) {
                         newDesc[1024]='\0';
                         strcpy(config.profileDescription, newDesc);
                     }
-                    SaveEncryptedConfig(&config, passwordInput);
+                    SaveEncryptedConfig(&config, masterPassword);
                 }
                 DrawTextEx(font, "Путь к аватарке:", (Vector2){1320, 760}, 20, 2, LIGHTGRAY);
                 if (GuiTextBox((Rectangle){1320, 790, 260, 40}, path2, 255, activeField == 7)) {
@@ -1773,7 +1794,7 @@ int main(void) {
                                 if (userAvatarTexture.id != 0) UnloadTexture(userAvatarTexture);
                                 userAvatarTexture = LoadTextureFromImage(img);
 
-                                SaveEncryptedConfig(&config, passwordInput);        // save and pull to server
+                                SaveEncryptedConfig(&config, masterPassword);        // save and pull to server
 
                                 FILE *f = fopen(savePath, "rb");
                                 if (f) {
@@ -1866,7 +1887,7 @@ int main(void) {
                     DrawCircle(121, 44, 6, RED);
                 }
                 if (GuiButton((Rectangle){155, 45, 120, 30}, "+ Группа")) {
-                    // TODO версия 2.0
+                    // TODO версия 3.0
                 }
 
                 // Friend section
