@@ -205,7 +205,7 @@ void registerClient(long userId, int sock) {
             time(&rawtime);
             info = localtime(&rawtime);
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-            printf("[%s][NETWORK] Replacing old session for user %ld (old sock=%d)\n", buffer, userId, curr->sock);
+            printf("[%s][NETWORK] Replacing old session for user %ld\n", buffer, userId);
             continue;
         }
         prev = curr; curr = curr->next;
@@ -1129,13 +1129,15 @@ void* acceptMessage(void *arg) {
                                             parts[4], parts[5]);
 
                 if (success) {
-                    snprintf(response, sizeof(response), "save-profile/ok");
+                    snprintf(response, sizeof(response), "save-profile/ok/");
                 } else {
-                    snprintf(response, sizeof(response), "save-profile/error");
+                    snprintf(response, sizeof(response), "save-profile/error/");
+                    strncat(response, fullMessage+13, strlen(fullMessage+13)+1);
                     // TODO: return current server profile
                 }
             } else {
-                snprintf(response, sizeof(response), "save-profile/badformat");
+                snprintf(response, sizeof(response), "save-profile/badformat/");
+                strncat(response, fullMessage+13, strlen(fullMessage+13)+1);
                 // TODO: return current server profile
             }
         }

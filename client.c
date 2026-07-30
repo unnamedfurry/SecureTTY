@@ -143,9 +143,11 @@ static int sock = -1;
 static struct sockaddr_in serv_addr;
 bool connected = false;
 bool initedNetwork = false;
+int profileUpdateCode = -1;
 
 void sendMessage(const char *message);
 bool LoadEncryptedConfig(Config *cfg, const char* master_password);
+bool SaveEncryptedConfig(Config *cfg, const char* master_password);
 // Decrypting received message
 bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max_out_size) {
     if (strncmp(encrypted_packet, "enc:", 4) != 0) {
@@ -241,11 +243,54 @@ void* recieveMessage(void* arg) {
                     }
                 }
                 if (strncmp(fullMessage, "save-profile/", 13) == 0) {
-                    printf("[SAVE PROFILE] Profile successfully saved on server\n");
-                    LoadEncryptedConfig(&config, masterPassword);
-                    if (config.userId == 0) {
-                        printf(cRED "[FATAL]" RESET "[SAVE PROFILE] User ID is 0, shutting down.\n");
-                        exit(4);
+                    char *parts[3] = {0};
+                    int cnt = 0;
+                    char *token = strtok(localBuf + 13, "/");
+                    while (token && cnt < 3) {
+                        parts[cnt++] = token;
+                        token = strtok(nullptr, "/");
+                    }
+                    if (strcmp(parts[1], "ok") == 0) {
+                        printf("[SAVE PROFILE] Profile successfully saved on server\n");
+                        LoadEncryptedConfig(&config, masterPassword);
+                        if (config.userId == 0) {
+                            printf(cRED "[FATAL]" RESET "[SAVE PROFILE] User ID is 0, shutting down.\n");
+                            exit(4);
+                        }
+                    } else if (strcmp(parts[1], "error") == 0) {
+                        char *parts2[6] = {0};
+                        int cnt2 = 0;
+                        char *token2 = strtok(parts[2], "\x1E");
+                        while (token2 && cnt2 < 6) {
+                            parts[cnt++] = token2;
+                            token2 = strtok(nullptr, "\x1E");
+                        }
+                        config.userId = strtol(parts2[0], nullptr, 10);
+                        strncpy(config.userName, parts2[1], MAX_NAME);
+                        strncpy(config.email, parts2[2], MAX_EMAIL);
+                        strncpy(config.passwordHash, parts2[3], SHA256_DIGEST_LENGTH);
+                        strncpy(config.avatarUrl, parts2[4], MAX_AVATAR);
+                        strncpy(config.profileDescription, parts2[5], MAX_DESC);
+                        SaveEncryptedConfig(&config, masterPassword);
+                        LoadEncryptedConfig(&config, masterPassword);
+                        profileUpdateCode = 1;
+                    } else if (strcmp(parts[1], "badformat") == 0) {
+                        char *parts2[6] = {0};
+                        int cnt2 = 0;
+                        char *token2 = strtok(parts[2], "\x1E");
+                        while (token2 && cnt2 < 6) {
+                            parts[cnt++] = token2;
+                            token2 = strtok(nullptr, "\x1E");
+                        }
+                        config.userId = strtol(parts2[0], nullptr, 10);
+                        strncpy(config.userName, parts2[1], MAX_NAME);
+                        strncpy(config.email, parts2[2], MAX_EMAIL);
+                        strncpy(config.passwordHash, parts2[3], SHA256_DIGEST_LENGTH);
+                        strncpy(config.avatarUrl, parts2[4], MAX_AVATAR);
+                        strncpy(config.profileDescription, parts2[5], MAX_DESC);
+                        SaveEncryptedConfig(&config, masterPassword);
+                        LoadEncryptedConfig(&config, masterPassword);
+                        profileUpdateCode = 2;
                     }
                 }
                 else if (strncmp(fullMessage, "createId/user/", 14) == 0) {
@@ -1545,7 +1590,8 @@ int main(void) {
     bool autoScrollAllowed = true;
     bool fileSelector = false;
     char *path2 = NULL;
-    char passwordInput[MAX_PASS+1] = {0};
+    int warningTimer = 5000;
+    Rectangle sliderBox = {201, 601, 98, 98};
 
     float process = 0.0f;
     bool userAgreed = false;
@@ -1576,25 +1622,26 @@ int main(void) {
         switch (currentState) {
             case STATE_MASTER_PASSWORD:
 
-                DrawTextEx(font, "Сейчас потребуется мастер-пароль приложения.", (Vector2){100, 100}, 32, 2, WHITE);
-                DrawTextEx(font, "УБЕДИСЬ что ты никому НЕ показываешь пароль", (Vector2){100, 150}, 32, 2, WHITE);
-                DrawTextEx(font, "(ты не ЗАПИСЫВАЕШЬ экран и твой монитор видишь ТОЛЬКО ты)", (Vector2){100, 220}, 18, 2, LIGHTGRAY);
+                DrawTextEx(font, "Мастер-пароль приложения:", (Vector2){480, 100}, 48, 2, LIGHTGRAY);
                 if (userAgreed==false) {
-                    DrawRectangleLines(100, 300, 240, 100, WHITE);
-                    if (CheckCollisionPointRec(GetMousePosition(), (Rectangle){100, 300, 240, 100})) {
+                    Rectangle sliderRail = {200, 600, 1200, 100};
+                    DrawRectangleLinesEx(sliderRail, 2, LIGHTGRAY);
+                    if (CheckCollisionPointRec(GetMousePosition(), sliderBox)) {
                         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-                            process+=0.7f;
-                            DrawRectangle(101, 301, (int)process, 98, GREEN);
-                            if (process>=238.0f) {
-                                userAgreed=true;
-                            }
+                            sliderBox.x = GetMousePosition().x-48;
+                            if (sliderBox.x < 201) sliderBox.x = 201;
+                            if (sliderBox.x > 1299) userAgreed=true;
                         } else {
-                            process=0.0f;
+                            sliderBox.x = 201;
                         }
                     }
-                    DrawTextEx(font, "Я готов", (Vector2){170, 340}, 24, 2, WHITE);
+                    DrawTextEx(font, "пароль есть только у меня и его никто не видит", (Vector2){400, 632}, 32, 2, GRAY);
+                    DrawRectangleRec(sliderBox, LIGHTGRAY);
+                    DrawRectangleLinesEx(sliderBox, 2, GRAY);
+                    GuiDrawIcon(115, (int)sliderBox.x+16, (int)sliderBox.y+16, 4, GRAY);
+                    DrawRectangle(201, 601, (sliderBox.x - 201), 98, GRAY);
                 } else {
-                    if (GuiTextBox((Rectangle){100, 300, 500, 100}, masterPassword, MAX_PASS, editMode==1)) {
+                    if (GuiTextBox((Rectangle){200, 600, 1200, 100}, masterPassword, MAX_PASS, editMode==1)) {
                         editMode = (editMode == 1) ? -1 : 1;
                         wrongPass=false;
                     }
@@ -1649,7 +1696,7 @@ int main(void) {
                     }
                 }
                 if (wrongPass==true) {
-                    DrawTextEx(font, "Неправильный пароль.", (Vector2){100, 500}, 32, 2, RED);
+                    DrawTextEx(font, "Неправильный пароль.", (Vector2){630, 500}, 32, 2, RED);
                     editMode=-1;
                 }
 
@@ -1824,6 +1871,32 @@ int main(void) {
                         } else {
                             printf("[SAVE SELF AVATAR] Failed to load image: %s\n", path2);
                         }
+                    }
+                }
+
+                if (profileUpdateCode == 1) {
+                    if (warningTimer > 1) {
+                        Rectangle warningRec = {1352, 16, 232, 40};
+                        Color accentColor = {255, 79, 79, 255};
+                        Color backgroundColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        DrawTextEx(font, "Ошибка сервера", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+                    } else {
+                        profileUpdateCode = -1;
+                        warningTimer = 5000;
+                    }
+                } else if (profileUpdateCode == 2) {
+                    if (warningTimer > 1) {
+                        Rectangle warningRec = {1352, 16, 232, 40};
+                        Color accentColor = {255, 79, 79, 255};
+                        Color backgroundColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        DrawTextEx(font, "Плохой синтаксис", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+                    } else {
+                        profileUpdateCode = -1;
+                        warningTimer = 5000;
                     }
                 }
 
