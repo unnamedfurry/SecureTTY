@@ -44,7 +44,7 @@ char outgoingBuffer[BUFFER_SIZE] = {0};
 static pthread_t thread_id;
 
 #define MAX_NAME 23
-#define MAX_EMAIL 23
+#define MAX_EMAIL 32
 #define MAX_PASS 23
 #define MAX_AVATAR 64
 #define MAX_DESC 1024
@@ -534,6 +534,7 @@ bool saveUserToDB(long userId, const char *username, const char *email,
     char esc_password[crypto_pwhash_STRBYTES*2+10];
     char esc_avatar[MAX_AVATAR*2 + 10];
     char esc_desc[MAX_DESC*2 + 100];
+    if (strcmp(profileDesc, "null") == 0) profileDesc="";
     bool ok = crypto_pwhash_str(passwordHashed, password, strlen(password),
                               crypto_pwhash_OPSLIMIT_MODERATE,
                               crypto_pwhash_MEMLIMIT_MODERATE) == 0;
@@ -627,10 +628,6 @@ bool saveMessageToDB(long messageId, long senderId, long receiverId, const char 
     }
     pthread_mutex_unlock(&mysql_mutex);
     return true;
-}
-
-void getFriends(long userId, int sock) {
-
 }
 
 // bool getUsers(void) {
@@ -1106,6 +1103,9 @@ void* acceptMessage(void *arg) {
         }
         else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
 
+            char *badprofile = malloc(128*sizeof(char));
+            memset(badprofile, 0, 128*sizeof(char));
+            strncpy(badprofile, fullMessage+13, strlen(fullMessage+13));
             char *parts[6] = {0};
             int count = 0;
             char *token = strtok(fullMessage + 13, "\x1E");
@@ -1132,12 +1132,12 @@ void* acceptMessage(void *arg) {
                     snprintf(response, sizeof(response), "save-profile/ok/");
                 } else {
                     snprintf(response, sizeof(response), "save-profile/error/");
-                    strncat(response, fullMessage+13, strlen(fullMessage+13)+1);
+                    strncat(response, badprofile, strlen(badprofile)+1);
                     // TODO: return current server profile
                 }
             } else {
                 snprintf(response, sizeof(response), "save-profile/badformat/");
-                strncat(response, fullMessage+13, strlen(fullMessage+13)+1);
+                strncat(response, badprofile, strlen(badprofile)+1);
                 // TODO: return current server profile
             }
         }
@@ -1345,7 +1345,7 @@ void* acceptMessage(void *arg) {
             char query[256];
             snprintf(query, 256, "SELECT passwordHash FROM users WHERE userId = %ld AND email = '%s' LIMIT 1", userId, esc_email);
             if (mysql_query(conn, query)) {
-                printf("[REGISTER CLIENT] Query Error: %s\n", mysql_error(conn));
+                printf("[LOGIN CLIENT] Query Error: %s\n", mysql_error(conn));
                 pthread_mutex_unlock(&mysql_mutex);
                 unregisterClient(sock);
                 close(sock);
@@ -1361,7 +1361,8 @@ void* acceptMessage(void *arg) {
             if (row != NULL && row[0] != NULL) {
                 strncpy(password, row[0], sizeof(password) - 1);
             } else {
-                printf("[REGISTER CLIENT] No matching user found.\n");
+                printf("[LOGIN CLIENT] No matching user found.\n");
+                close(sock);
             }
             mysql_free_result(result);
             pthread_mutex_unlock(&mysql_mutex);
@@ -1374,7 +1375,7 @@ void* acceptMessage(void *arg) {
             time(&rawtime);
             info = localtime(&rawtime);
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-            printf("[%s][REGISTER CLIENT] Received for client/user %ld\n", buffer, userId);
+            printf("[%s][LOGIN CLIENT] Received for client/user %ld\n", buffer, userId);
             if (userId > 0 && ok == true) {
                 registerClient(userId, sock);
                 continue;

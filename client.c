@@ -22,7 +22,7 @@
 
 #define CONFIG_FILE "conf.enc"
 #define MAX_NAME 23
-#define MAX_EMAIL 23
+#define MAX_EMAIL 32
 #define MAX_PASS 23
 #define MAX_AVATAR 64
 #define MAX_DESC 1024
@@ -243,43 +243,20 @@ void* recieveMessage(void* arg) {
                     }
                 }
                 if (strncmp(fullMessage, "save-profile/", 13) == 0) {
-                    char *parts[3] = {0};
-                    int cnt = 0;
-                    char *token = strtok(localBuf + 13, "/");
-                    while (token && cnt < 3) {
-                        parts[cnt++] = token;
-                        token = strtok(nullptr, "/");
-                    }
-                    if (strcmp(parts[1], "ok") == 0) {
+                    if (strncmp(fullMessage+13, "ok", 2) == 0) {
                         printf("[SAVE PROFILE] Profile successfully saved on server\n");
                         LoadEncryptedConfig(&config, masterPassword);
                         if (config.userId == 0) {
                             printf(cRED "[FATAL]" RESET "[SAVE PROFILE] User ID is 0, shutting down.\n");
                             exit(4);
                         }
-                    } else if (strcmp(parts[1], "error") == 0) {
-                        char *parts2[6] = {0};
-                        int cnt2 = 0;
-                        char *token2 = strtok(parts[2], "\x1E");
-                        while (token2 && cnt2 < 6) {
-                            parts[cnt++] = token2;
-                            token2 = strtok(nullptr, "\x1E");
-                        }
-                        config.userId = strtol(parts2[0], nullptr, 10);
-                        strncpy(config.userName, parts2[1], MAX_NAME);
-                        strncpy(config.email, parts2[2], MAX_EMAIL);
-                        strncpy(config.passwordHash, parts2[3], SHA256_DIGEST_LENGTH);
-                        strncpy(config.avatarUrl, parts2[4], MAX_AVATAR);
-                        strncpy(config.profileDescription, parts2[5], MAX_DESC);
-                        SaveEncryptedConfig(&config, masterPassword);
-                        LoadEncryptedConfig(&config, masterPassword);
+                    } else if (strncmp(fullMessage+13, "error", 5) == 0) {
                         profileUpdateCode = 1;
-                    } else if (strcmp(parts[1], "badformat") == 0) {
                         char *parts2[6] = {0};
                         int cnt2 = 0;
-                        char *token2 = strtok(parts[2], "\x1E");
+                        char *token2 = strtok(fullMessage+19, "\x1E");
                         while (token2 && cnt2 < 6) {
-                            parts[cnt++] = token2;
+                            parts2[cnt2++] = (token2 == NULL || strcmp(token2, "null") == 0 || strcmp(token2, "NULL") == 0) ? "" : token2;
                             token2 = strtok(nullptr, "\x1E");
                         }
                         config.userId = strtol(parts2[0], nullptr, 10);
@@ -290,7 +267,23 @@ void* recieveMessage(void* arg) {
                         strncpy(config.profileDescription, parts2[5], MAX_DESC);
                         SaveEncryptedConfig(&config, masterPassword);
                         LoadEncryptedConfig(&config, masterPassword);
+                    } else if (strncmp(fullMessage+13, "badformat", 9) == 0) {
                         profileUpdateCode = 2;
+                        char *parts2[6] = {0};
+                        int cnt2 = 0;
+                        char *token2 = strtok(fullMessage+23, "\x1E");
+                        while (cnt2 < 6) {
+                            parts2[cnt2++] = (token2 == NULL || strcmp(token2, "null") == 0 || strcmp(token2, "NULL") == 0) ? "" : token2;
+                            token2 = strtok(nullptr, "\x1E");
+                        }
+                        config.userId = strtol(parts2[0], nullptr, 10);
+                        strncpy(config.userName, parts2[1], MAX_NAME);
+                        strncpy(config.email, parts2[2], MAX_EMAIL);
+                        strncpy(config.passwordHash, parts2[3], SHA256_DIGEST_LENGTH);
+                        strncpy(config.avatarUrl, parts2[4], MAX_AVATAR);
+                        strncpy(config.profileDescription, parts2[5], MAX_DESC);
+                        SaveEncryptedConfig(&config, masterPassword);
+                        LoadEncryptedConfig(&config, masterPassword);
                     }
                 }
                 else if (strncmp(fullMessage, "createId/user/", 14) == 0) {
@@ -657,6 +650,7 @@ void* recieveMessage(void* arg) {
     return NULL;
 }
 bool initNetwork(void) {
+    if (initedNetwork) return true;
     if (connected) return true;
     // Create socket
     sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -715,7 +709,7 @@ bool EncryptPacket(const char* plaintext, char* out_ciphertext, size_t max_out_s
 
     // Formatting nonce + ciphertext in base64
     char nonce_b64[128] = {0};
-    char ct_b64[8192] = {0};
+    char ct_b64[524160] = {0};
 
     sodium_bin2base64(nonce_b64, sizeof(nonce_b64), nonce, sizeof(nonce), sodium_base64_VARIANT_ORIGINAL);
     sodium_bin2base64(ct_b64, sizeof(ct_b64), ciphertext, ciphertext_len, sodium_base64_VARIANT_ORIGINAL);
@@ -892,7 +886,7 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
     fprintf(tmp, "email=%s\n", cfg->email);
     fprintf(tmp, "passwordHash=%s\n", cfg->passwordHash);
     fprintf(tmp, "avatarUrl=%s\n", strlen(cfg->avatarUrl)==0 ? "null" : cfg->avatarUrl);
-    fprintf(tmp, "profileDescription=%s\n", strlen(cfg->profileDescription)==0 ? "null" : cfg->profileDescription);
+    fprintf(tmp, "profileDescription=%s\n", cfg->profileDescription);
 
     fseek(tmp, 0, SEEK_END);
     long size = ftell(tmp);
@@ -916,19 +910,21 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
 
     printf("[SAVE ENCRYPTED CONFIG] Saved config to file.\n");
 
-    // Sending sata to server
-    char message[2048] = {0};
-    snprintf(message, sizeof(message),
-             "save-profile/%ld\x1E%s\x1E%s\x1E%s\x1E%s\x1E%s",
-             cfg->userId,
-             cfg->userName,
-             cfg->email,
-             cfg->passwordHash,
-             cfg->avatarUrl,
-             cfg->profileDescription);
+    if (profileUpdateCode == -1) {
+        // Sending sata to server
+        char message[2048] = {0};
+        snprintf(message, sizeof(message),
+                 "save-profile/%ld\x1E%s\x1E%s\x1E%s\x1E%s\x1E%s",
+                 cfg->userId,
+                 cfg->userName,
+                 cfg->email,
+                 cfg->passwordHash,
+                 cfg->avatarUrl,
+                 cfg->profileDescription);
 
-    printf("[SAVE ENCRYPTED CONFIG] Sent data to server.\n");
-    sendMessage(message);
+        printf("[SAVE ENCRYPTED CONFIG] Sent data to server.\n");
+        sendMessage(message);
+    }
     return true;
 }
 
@@ -1570,19 +1566,7 @@ int main(void) {
     char userId[15] = "";
     static Texture2D userAvatarTexture = {0};
     static char avatarPathInput[512] = {0};
-    if (strlen(config.avatarUrl) != 0) {
-        ssize_t len = readlink("/proc/self/exe", avatarPathInput, 255);
-        if (len == -1) {
-            printf("[LOAD SELF AVATAR] Readlink /proc/self/exe failed\n");
-            avatarPathInput[0] = '\0';
-        } else {
-            strncpy(avatarPathInput, config.avatarUrl, strlen(config.avatarUrl)+len);
-            Image img = LoadImage(avatarPathInput);
-            userAvatarTexture = LoadTextureFromImage(img);
-            UnloadImage(img);
-            printf("[LOAD SELF AVATAR] Current path: %s\n", avatarPathInput);
-        }
-    }
+    bool loadedAvatar = false;
     static float scrollOffset = 0.0f;
     static float scrollVelocity = 0.0f;     // inertion speed
     static float scrollFriction = 0.92f;    // fade out timne (0.85 - hard, 0.94 - soft)
@@ -1593,7 +1577,6 @@ int main(void) {
     int warningTimer = 5000;
     Rectangle sliderBox = {201, 601, 98, 98};
 
-    float process = 0.0f;
     bool userAgreed = false;
     int editMode = -1;
     bool wrongPass = false;
@@ -1622,6 +1605,7 @@ int main(void) {
         switch (currentState) {
             case STATE_MASTER_PASSWORD:
 
+                initedNetwork = initNetwork();
                 DrawTextEx(font, "Мастер-пароль приложения:", (Vector2){480, 100}, 48, 2, LIGHTGRAY);
                 if (userAgreed==false) {
                     Rectangle sliderRail = {200, 600, 1200, 100};
@@ -1649,8 +1633,6 @@ int main(void) {
                         if (strlen(masterPassword)>6) {
                             if (FileExists(CONFIG_FILE)) {
                                 if (LoadEncryptedConfig(&config, masterPassword)) {
-                                    initedNetwork = initNetwork();
-                                    usleep(1000000);
                                     memset(friends, 0, sizeof(friends));
                                     memset(pendingFriends, 0, sizeof(pendingFriends));
                                     if (config.userId != 0) {
@@ -1661,6 +1643,10 @@ int main(void) {
                                         if (hasSessionKey) {
                                             memset(msgBuf, 0, BUFFER_SIZE);
                                             snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
+                                            sendMessage(msgBuf);
+                                            usleep(1000000);
+                                            memset(msgBuf, 0, sizeof(msgBuf));
+                                            snprintf(msgBuf, sizeof(msgBuf), "getFriendsList/%ld", config.userId);
                                             sendMessage(msgBuf);
                                         } else {
                                             goto again;
@@ -1676,9 +1662,6 @@ int main(void) {
                                         config.isFirstUsed=true;
                                         currentState=STATE_FIRST_SETUP;
                                     } else {
-                                        char cmessage[27] = {0};
-                                        sprintf(cmessage, "getFriendsList/%ld", config.userId);
-                                        sendMessage(cmessage);
                                         currentState=STATE_MAIN_CHAT;
                                     }
                                 } else {
@@ -1699,11 +1682,19 @@ int main(void) {
                     DrawTextEx(font, "Неправильный пароль.", (Vector2){630, 500}, 32, 2, RED);
                     editMode=-1;
                 }
+                if (initedNetwork == false) {
+                    Rectangle networkErrorRec = {1, 900/2-100, 1600, 200};
+                    Color accentColor = {255, 79, 79, 255};
+                    Color backgroundColor = {255, 157, 157, 255};
+                    DrawRectangleRec(networkErrorRec, backgroundColor);
+                    DrawRectangleLinesEx(networkErrorRec, 2, accentColor);
+                    DrawTextEx(font, "Потеряно соединение с сервером!", (Vector2){1600/2-470, 900/2-20}, 60, 2, RED);
+                }
 
                 break;
             case STATE_FIRST_SETUP:
 
-                DrawTextEx(font, "Добро пожаловать. Пройди настройку профиля:", (Vector2){100, 50}, 40, 3, WHITE);
+                DrawTextEx(font, "Привет. Пройди настройку профиля:", (Vector2){100, 50}, 40, 3, WHITE);
                 if (GuiTextBox((Rectangle){100, 150, 400, 40}, config.userName, MAX_NAME, activeField==0)) {
                     activeField = (activeField == 0) ? -1 : 0;
                 }
@@ -1741,12 +1732,29 @@ int main(void) {
                     currentState=STATE_MAIN_CHAT;
                 }
                 if (initedNetwork == false) {
-                    DrawRectangle(1, 900/2-100, 1600, 200, GRAY);
-                    DrawRectangleLines(1, 900/2-100, 1599, 199, RED);
+                    Rectangle networkErrorRec = {1, 900/2-100, 1600, 200};
+                    Color accentColor = {255, 79, 79, 255};
+                    Color backgroundColor = {255, 157, 157, 255};
+                    DrawRectangleRec(networkErrorRec, backgroundColor);
+                    DrawRectangleLinesEx(networkErrorRec, 2, accentColor);
                     DrawTextEx(font, "Потеряно соединение с сервером!", (Vector2){1600/2-470, 900/2-20}, 60, 2, RED);
                 }
                 break;
             case STATE_MAIN_CHAT:
+                if (strlen(config.avatarUrl) != 0 && loadedAvatar==false) {
+                    ssize_t len = readlink("/proc/self/exe", avatarPathInput, 255);
+                    if (len == -1) {
+                        printf("[LOAD SELF AVATAR] Readlink /proc/self/exe failed\n");
+                        avatarPathInput[0] = '\0';
+                    } else {
+                        strncpy(avatarPathInput, config.avatarUrl, strlen(config.avatarUrl)+len);
+                        Image img = LoadImage(avatarPathInput);
+                        userAvatarTexture = LoadTextureFromImage(img);
+                        UnloadImage(img);
+                        printf("[LOAD SELF AVATAR] Current path: %s\n", avatarPathInput);
+                    }
+                    loadedAvatar=true;
+                }
 
                 DrawRectangleLines(1, 1, 300, 899, GRAY);
                 DrawRectangleLines(301, 1, 1000, 899, GRAY);
@@ -1799,10 +1807,19 @@ int main(void) {
                     if (newDesc[0] != 0) {
                         newDesc[1024]='\0';
                         strcpy(config.profileDescription, newDesc);
+                        memset(newDesc, 0, sizeof(newDesc));
                     }
                     SaveEncryptedConfig(&config, masterPassword);
                 }
                 DrawTextEx(font, "Путь к аватарке:", (Vector2){1320, 760}, 20, 2, LIGHTGRAY);
+                if (path2 == NULL && CheckCollisionPointRec(GetMousePosition(), (Rectangle){1320, 790, 260, 40})) {
+                    path2 = malloc(255*sizeof(char));
+                    if (path2 == NULL) {
+                        printf(cRED "[FATAL]" RESET " Failed to allocate memory for self avatar path, exiting.");
+                        exit(6);
+                    }
+                    memset(path2, 0, sizeof(path2));
+                }
                 if (GuiTextBox((Rectangle){1320, 790, 260, 40}, path2, 255, activeField == 7)) {
                     activeField = (activeField == 7) ? -1 : 7;
                 }
@@ -1872,6 +1889,7 @@ int main(void) {
                             printf("[SAVE SELF AVATAR] Failed to load image: %s\n", path2);
                         }
                     }
+                    memset(path2, 0, sizeof(path2));
                 }
 
                 if (profileUpdateCode == 1) {
@@ -1882,18 +1900,20 @@ int main(void) {
                         DrawRectangleRec(warningRec, backgroundColor);
                         DrawRectangleLinesEx(warningRec, 2, accentColor);
                         DrawTextEx(font, "Ошибка сервера", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+                        warningTimer-=1;
                     } else {
                         profileUpdateCode = -1;
                         warningTimer = 5000;
                     }
                 } else if (profileUpdateCode == 2) {
                     if (warningTimer > 1) {
-                        Rectangle warningRec = {1352, 16, 232, 40};
+                        Rectangle warningRec = {1352, 16, 268, 40};
                         Color accentColor = {255, 79, 79, 255};
                         Color backgroundColor = {255, 157, 157, 255};
                         DrawRectangleRec(warningRec, backgroundColor);
                         DrawRectangleLinesEx(warningRec, 2, accentColor);
                         DrawTextEx(font, "Плохой синтаксис", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+                        warningTimer-=1;
                     } else {
                         profileUpdateCode = -1;
                         warningTimer = 5000;
@@ -1934,7 +1954,7 @@ int main(void) {
                     activeField = (activeField == 5) ? -1 : 5;
                 }
                 if (GuiButton((Rectangle){1141, 839, 160, 60}, "Отправить") || IsKeyPressed(KEY_ENTER)) {
-                    if (strlen(message)!=0 && currentFriendId<=0L) {
+                    if (strlen(message)!=0 && currentFriendId>0) {
                         sendMessage("createId/message");
                         message[2048]='\0';
                         char parsed[BUFFER_SIZE] = {0};
@@ -2206,8 +2226,11 @@ int main(void) {
                 }
 
                 if (initedNetwork == false) {
-                    DrawRectangle(1, 900/2-100, 1600, 200, GRAY);
-                    DrawRectangleLines(1, 900/2-100, 1599, 199, RED);
+                    Rectangle networkErrorRec = {1, 900/2-100, 1600, 200};
+                    Color accentColor = {255, 79, 79, 255};
+                    Color backgroundColor = {255, 157, 157, 255};
+                    DrawRectangleRec(networkErrorRec, backgroundColor);
+                    DrawRectangleLinesEx(networkErrorRec, 2, accentColor);
                     DrawTextEx(font, "Потеряно соединение с сервером!", (Vector2){1600/2-470, 900/2-20}, 60, 2, RED);
                 }
 
