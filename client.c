@@ -919,8 +919,8 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
                  cfg->userName,
                  cfg->email,
                  cfg->passwordHash,
-                 cfg->avatarUrl,
-                 cfg->profileDescription);
+                 (strcmp(cfg->avatarUrl, "") == 0 ? "null" : cfg->avatarUrl),
+                 (strcmp(cfg->profileDescription, "") == 0 ? "null" : cfg->profileDescription));
 
         printf("[SAVE ENCRYPTED CONFIG] Sent data to server.\n");
         sendMessage(message);
@@ -1567,11 +1567,16 @@ int main(void) {
     static Texture2D userAvatarTexture = {0};
     static char avatarPathInput[512] = {0};
     bool loadedAvatar = false;
-    static float scrollOffset = 0.0f;
-    static float scrollVelocity = 0.0f;     // inertion speed
-    static float scrollFriction = 0.92f;    // fade out timne (0.85 - hard, 0.94 - soft)
-    static bool isDraggingScrollbar = false;
-    bool autoScrollAllowed = true;
+    static float chatScrollOffset = 0.0f;
+    static float chatScrollVelocity = 0.0f;     // inertion speed
+    static float chatSrollFriction = 0.92f;    // fade out timne (0.85 - hard, 0.94 - soft)
+    static bool chatIsDraggingScrollbar = false;
+    static float friendScrollOffset = 0.0f;
+    static float friendScrollVelocity = 0.0f;
+    static float friendSrollFriction = 0.92f;
+    static bool friendIsDraggingScrollbar = false;
+    bool chatAutoScrollAllowed = true;
+    bool friendAutoScrollAllowed = true;
     bool fileSelector = false;
     char *path2 = NULL;
     int warningTimer = 5000;
@@ -1582,20 +1587,32 @@ int main(void) {
     bool wrongPass = false;
 
     while (!WindowShouldClose()) {
-        float contentHeight = 0.0f;
+        float chatContentHeight = 0.0f;
+        float friendContentHeight = 0.0f;
         float wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
-            scrollVelocity -= wheel * 15.0f;        // bigger number = faster scroll
-            autoScrollAllowed=false;
+            chatScrollVelocity -= wheel * 15.0f;        // bigger number = faster scroll
+            friendScrollVelocity -= wheel * 15.0f;
+            chatAutoScrollAllowed=false;
         }
-        if (!isDraggingScrollbar) {
+        if (!chatIsDraggingScrollbar) {
             // regular scroollo with inertion
-            scrollOffset += scrollVelocity;
-            scrollVelocity *= scrollFriction;       // fadeout
+            chatScrollOffset += chatScrollVelocity;
+            chatScrollVelocity *= chatSrollFriction;       // fadeout
 
             // if the speed is too slow -> resetting to zero
-            if (fabsf(scrollVelocity) < 0.5f) {
-                scrollVelocity = 0.0f;
+            if (fabsf(chatScrollVelocity) < 0.5f) {
+                chatScrollVelocity = 0.0f;
+            }
+        }
+        if (!friendIsDraggingScrollbar) {
+            // regular scroollo with inertion
+            friendScrollOffset += friendScrollVelocity;
+            friendScrollVelocity *= friendSrollFriction;       // fadeout
+
+            // if the speed is too slow -> resetting to zero
+            if (fabsf(friendScrollVelocity) < 0.5f) {
+                friendScrollVelocity = 0.0f;
             }
         }
 
@@ -1644,7 +1661,6 @@ int main(void) {
                                             memset(msgBuf, 0, BUFFER_SIZE);
                                             snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
                                             sendMessage(msgBuf);
-                                            usleep(1000000);
                                             memset(msgBuf, 0, sizeof(msgBuf));
                                             snprintf(msgBuf, sizeof(msgBuf), "getFriendsList/%ld", config.userId);
                                             sendMessage(msgBuf);
@@ -1669,7 +1685,6 @@ int main(void) {
                                 }
                             } else {
                                 initedNetwork = initNetwork();
-                                usleep(1000000);
                                 memset(friends, 0, sizeof(friends));
                                 memset(pendingFriends, 0, sizeof(pendingFriends));
                                 currentState=STATE_FIRST_SETUP;
@@ -1824,6 +1839,14 @@ int main(void) {
                     activeField = (activeField == 7) ? -1 : 7;
                 }
                 if (GuiButton((Rectangle){1320, 840, 200, 50}, "Загрузить")) {
+                    if (path2 == NULL) {
+                        path2 = malloc(255*sizeof(char));
+                        if (path2 == NULL) {
+                            printf(cRED "[FATAL]" RESET " Failed to allocate memory for self avatar path, exiting.");
+                            exit(6);
+                        }
+                        memset(path2, 0, sizeof(path2));
+                    }
                     if (strlen(path2) > 3) {
                         Image img = LoadImage(path2);
 
@@ -1922,6 +1945,7 @@ int main(void) {
 
                 // Update friend avatars section
                 if (requestedAvatarUpdate==true) {
+                    bool triedAvatar = false;
                     for (int i = 0; i < 100 && friends[i].userId != 0; i++) {
                         if (friendAvatarArr[i].id != 0) {
                             UnloadTexture(friendAvatarArr[i]);
@@ -1939,11 +1963,12 @@ int main(void) {
                                 friendAvatarArr[i] = LoadTextureFromImage(img);
                                 UnloadImage(img);
                             }
-                        } else {
+                        } else if (triedAvatar==false) {
                             char req[64];
                             snprintf(req, sizeof(req), "getAvatar/%ld", friends[i].userId);
                             sendMessage(req);
                             printf("[AVATAR] Requested avatar for %ld\n", friends[i].userId);
+                            triedAvatar=true;
                         }
                     }
                     requestedAvatarUpdate=false;
@@ -1970,7 +1995,7 @@ int main(void) {
                         }
                         memset(message, 0, sizeof(message));
                         memset(parsed, 0, strlen(parsed));
-                        autoScrollAllowed=true;
+                        chatAutoScrollAllowed=true;
                     }
                 }
                 if (GuiButton((Rectangle){20, 45, 100, 30}, "+ Друг")) {
@@ -2001,7 +2026,7 @@ int main(void) {
                                 sendMessage(req);
                             }
 
-                            autoScrollAllowed=true;
+                            chatAutoScrollAllowed=true;
                         }
                     } else {
                         DrawRectangleRec(friendRect, (Color){50, 50, 60, 255});
@@ -2026,7 +2051,7 @@ int main(void) {
                             DrawRectangleRec(badgeRect, RED);
                             DrawText(badge, (int)badgeRect.x + 6, (int)badgeRect.y + 4, 20, WHITE);
                         }
-                        autoScrollAllowed=true;
+                        chatAutoScrollAllowed=true;
                     }
 
                     if (strlen(friends[i].profileDescription) > 0) {
@@ -2048,13 +2073,13 @@ int main(void) {
 
                     char dummy[2048] = {0};
                     int textH = WrapText(m->message, dummy, sizeof(dummy), maxTextW, font, 22, 2);
-                    contentHeight += (float)textH + 25 + 18;   // text height + indents
+                    chatContentHeight += (float)textH + 25 + 18;   // text height + indents
                 }
-                if (contentHeight < 680) scrollOffset = 0;
-                float maxScroll = fmaxf(0.0f, contentHeight - 680.0f);
-                scrollOffset = clamp(scrollOffset, 0.0f, maxScroll);
-                if (autoScrollAllowed==true && messagesCount > 0) {
-                    scrollOffset = maxScroll;
+                if (chatContentHeight < 680) chatScrollOffset = 0;
+                float maxScroll = fmaxf(0.0f, chatContentHeight - 680.0f);
+                chatScrollOffset = clamp(chatScrollOffset, 0.0f, maxScroll);
+                if (chatAutoScrollAllowed==true && messagesCount > 0) {
+                    chatScrollOffset = maxScroll;
                 }
 
                 // chat header
@@ -2069,7 +2094,7 @@ int main(void) {
                     DrawTextEx(font, TextFormat("Чат с %s", friendName), (Vector2){330, 50}, 28, 2, WHITE);
                 }
 
-                float currentY = 100 - scrollOffset;
+                float currentY = 100 - chatScrollOffset;
                 for (int i = 0; i < messagesCount; i++) {
                     Message *m = &messages[i];
                     bool isMine = (m->senderId == config.userId);
@@ -2102,10 +2127,10 @@ int main(void) {
                     currentY += (float)bubbleHeight + 18;
                 }
 
-                if (contentHeight > 680) {
+                if (chatContentHeight > 680) {
                     float scrollbarTrackHeight = 680;
-                    float scrollbarHeight = (680 / contentHeight) * scrollbarTrackHeight;
-                    float scrollbarY = 100 + (scrollOffset / contentHeight) * scrollbarTrackHeight;
+                    float scrollbarHeight = (680 / chatContentHeight) * scrollbarTrackHeight;
+                    float scrollbarY = 100 + (chatScrollOffset / chatContentHeight) * scrollbarTrackHeight;
 
                     Rectangle scrollbarRect = {
                         chatArea.x + chatArea.width - 14,
@@ -2116,27 +2141,27 @@ int main(void) {
 
                     DrawRectangle(chatArea.x + chatArea.width - 14, 100, 10, 680, Fade(BLACK, 0.3f));
 
-                    Color sbColor = isDraggingScrollbar ? WHITE : LIGHTGRAY;
+                    Color sbColor = chatIsDraggingScrollbar ? WHITE : LIGHTGRAY;
                     DrawRectangleRec(scrollbarRect, Fade(sbColor, 0.85f));
 
                     Vector2 mouse = GetMousePosition();
 
                     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
                         if (CheckCollisionPointRec(mouse, scrollbarRect)) {
-                            isDraggingScrollbar = true;
-                            autoScrollAllowed=false;
+                            chatIsDraggingScrollbar = true;
+                            chatAutoScrollAllowed=false;
                         }
                     }
 
                     if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
-                        isDraggingScrollbar = false;
-                        autoScrollAllowed=false;
+                        chatIsDraggingScrollbar = false;
+                        chatAutoScrollAllowed=false;
                     }
 
-                    if (isDraggingScrollbar) {
-                        autoScrollAllowed=false;
+                    if (chatIsDraggingScrollbar) {
+                        chatAutoScrollAllowed=false;
                         float mouseRelative = mouse.y - scrollbarHeight/2 - 100;
-                        scrollOffset = (mouseRelative / 680) * contentHeight;
+                        chatScrollOffset = (mouseRelative / 680) * chatContentHeight;
                     }
                 }
 

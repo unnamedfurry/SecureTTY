@@ -81,6 +81,7 @@ typedef struct ClientSession {
     int sock;
     unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
     bool hasSessionKey;
+    bool loggedIn;
     struct ClientSession *next;
 } ClientSession;
 
@@ -213,15 +214,7 @@ void registerClient(long userId, int sock) {
 
     if (mine) {
         mine->userId = userId;           // key and hasSessionKey are saved
-    } else {
-        // fallback for old protocol / client without keyexchange
-        ClientSession *session = malloc(sizeof(ClientSession));
-        session->userId = userId;
-        session->sock = sock;
-        session->hasSessionKey = false;
-        memset(session->serverSessionKey, 0, sizeof(session->serverSessionKey));
-        session->next = activeClients;
-        activeClients = session;
+        mine->loggedIn=false;
     }
     time_t rawtime;
     struct tm *info;
@@ -957,38 +950,47 @@ void* acceptMessage(void *arg) {
     free(arg);
     char response[PACKET_SIZE] = {0};
     char localBuf[BUFFER_SIZE];
-    char fullMessage[PACKET_SIZE];
-    int totalReceived;
-
+    char recvBuf[PACKET_SIZE] = {0};   // raw storage from the socket — read/shift only; never parse directly.
+    char fullMessage[PACKET_SIZE] = {0}; // working copy of a SINGLE message — it is safe to perform decrypt and strtok on it
+    int totalReceived = 0;
+// TODO: убрать мусорные куски (aka разрезающие конец шифрованного пакета \n)
     while (1) {
-        totalReceived = 0;
-        memset(fullMessage, 0, sizeof(fullMessage));
-        finishedResponse = false;
-
-        while (1) { // splitting or combining packets based on \n persistence in the end of the packet
-            memset(localBuf, 0, sizeof(localBuf));
-            int bytes = read(sock, localBuf, sizeof(localBuf) - 1);
-            if (bytes <= 0) {
-                time_t rawtime;
-                struct tm *info;
-                char buffer[80];
-                time(&rawtime);
-                info = localtime(&rawtime);
-                strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-                printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Client disconnected (sock %d)\n", buffer, sock);
-                goto client_disconnect;
-            }
-
-            memcpy(fullMessage + totalReceived, localBuf, bytes);
-            totalReceived += bytes;
-            fullMessage[totalReceived] = '\0';
-
-            if (strchr(localBuf, '\n') || bytes < sizeof(localBuf)-1) {
-                break;
-            }
+        memset(localBuf, 0, sizeof(localBuf));
+        int bytes = read(sock, localBuf, sizeof(localBuf) - 1);
+        if (bytes <= 0) {
+            time_t rawtime;
+            struct tm *info;
+            char buffer[80];
+            time(&rawtime);
+            info = localtime(&rawtime);
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+            printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Client disconnected (sock %d)\n", buffer, sock);
+            goto client_disconnect;
         }
 
-        fullMessage[strcspn(fullMessage, "\n")] = '\0';
+        if (totalReceived + bytes > (int)sizeof(recvBuf) - 1) {
+            printf(RED "[ACCEPT MESSAGE] Incoming data exceeds PACKET_SIZE, dropping buffered data (sock %d)\n" RESET, sock);
+            totalReceived = 0;
+        }
+
+        memcpy(recvBuf + totalReceived, localBuf, bytes);
+        totalReceived += bytes;
+        recvBuf[totalReceived] = '\0';
+
+        // multiple newline-separated messages might arrive in a single read() —
+        // parse everything that has accumulated in recvBuf, not just the first one
+        char *newlinePos;
+        while ((newlinePos = memchr(recvBuf, '\n', totalReceived)) != NULL) {
+            size_t msgLen = (size_t)(newlinePos - recvBuf);
+            if (msgLen >= sizeof(fullMessage)) msgLen = sizeof(fullMessage) - 1;
+
+            // Copy the message to a separate working buffer: recvBuf remains
+            // untouched, and subsequent messages in the queue are safe
+            // regardless of what decrypt/strtok do to fullMessage.
+            memcpy(fullMessage, recvBuf, msgLen);
+            fullMessage[msgLen] = '\0';
+
+            finishedResponse = false;
 
         {
             time_t rawtime;
@@ -997,7 +999,7 @@ void* acceptMessage(void *arg) {
             time(&rawtime);
             info = localtime(&rawtime);
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-            printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Client said (full message, %d bytes): %s\n", buffer, totalReceived, fullMessage);
+            printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Client said (full message, %zu bytes): %s\n", buffer, msgLen, fullMessage);
         }
 
         char decrypted[PACKET_SIZE] = {0};
@@ -1007,7 +1009,14 @@ void* acceptMessage(void *arg) {
             if (curr->sock == sock) {
                 pthread_mutex_unlock(&clientsMutex);
                 if (DecryptPacket(curr, fullMessage, decrypted, sizeof(decrypted))) {
-                    strncpy(fullMessage, decrypted, sizeof(decrypted)-1);
+                    // fullMessage is already an isolated copy of a single message
+                    // (we leave recvBuf and the queue of remaining messages untouched),
+                    // so we simply copy the decrypted text without using strncpy —
+                    // that would unnecessarily zero out PACKET_SIZE bytes for every message
+                    size_t dlen = strlen(decrypted);
+                    if (dlen >= sizeof(fullMessage)) dlen = sizeof(fullMessage) - 1;
+                    memcpy(fullMessage, decrypted, dlen);
+                    fullMessage[dlen] = '\0';
                     break;
                 }
                 break;
@@ -1086,7 +1095,6 @@ void* acceptMessage(void *arg) {
             strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
             printf("[%s][CREATE USER ID] New Id generated for user: %ld\n", buffer, id);
             memset(response, 0, sizeof(response));
-            continue;
         }
         else if (strncmp(fullMessage, "createId/message", 16) == 0) {
             srand(time(NULL) ^ clock());
@@ -1133,18 +1141,25 @@ void* acceptMessage(void *arg) {
                 } else {
                     snprintf(response, sizeof(response), "save-profile/error/");
                     strncat(response, badprofile, strlen(badprofile)+1);
-                    // TODO: return current server profile
                 }
             } else {
                 snprintf(response, sizeof(response), "save-profile/badformat/");
                 strncat(response, badprofile, strlen(badprofile)+1);
-                // TODO: return current server profile
             }
         }
 
         else if (strncmp(fullMessage, "getFriendsList/", 15) == 0) {
+            pthread_mutex_lock(&clientsMutex);
+            ClientSession *curr2 = activeClients;
+            while (curr2) {
+                if (curr2->sock == sock) {
+                    if (curr2->loggedIn==false) goto onfail;
+                }
+                curr2 = curr2->next;
+            }
+            pthread_mutex_unlock(&clientsMutex);
             long userId = strtol(fullMessage + 15, nullptr, 10);
-            if (userId <= 0) continue;
+            if (userId <= 0) goto onfail;
             int offset = snprintf(response, sizeof(response), "getFriendsList/%ld\x1E", userId);
 
             // getting relatedUserId
@@ -1312,7 +1327,6 @@ void* acceptMessage(void *arg) {
             printf("[%s][UPDATE CLIENT] Received for client/user %ld\n", buffer, userId);
             if (userId > 0) {
                 getClientUpdates(userId, sock);
-                continue;
             }
         }
         else if (strncmp(fullMessage, "registerClient/", 15) == 0) {
@@ -1326,7 +1340,6 @@ void* acceptMessage(void *arg) {
             printf("[%s][REGISTER CLIENT] Received for client/user %ld\n", buffer, userId);
             if (userId > 0) {
                 registerClient(userId, sock);
-                continue;
             }
         }
         else if (strncmp(fullMessage, "login/", 6) == 0) {
@@ -1378,14 +1391,30 @@ void* acceptMessage(void *arg) {
             printf("[%s][LOGIN CLIENT] Received for client/user %ld\n", buffer, userId);
             if (userId > 0 && ok == true) {
                 registerClient(userId, sock);
-                continue;
+                pthread_mutex_lock(&clientsMutex);
+                ClientSession *curr2 = activeClients;
+                while (curr2) {
+                    if (curr2->sock == sock) {
+                        curr2->loggedIn=true;
+                    }
+                    curr2 = curr2->next;
+                }
+                pthread_mutex_unlock(&clientsMutex);
             } else {
                 unregisterClient(sock);
                 close(sock);
-                continue;
             }
         }
         else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
+            pthread_mutex_lock(&clientsMutex);
+            ClientSession *curr2 = activeClients;
+            while (curr2) {
+                if (curr2->sock == sock) {
+                    if (curr2->loggedIn==false) goto onfail;
+                }
+                curr2 = curr2->next;
+            }
+            pthread_mutex_unlock(&clientsMutex);
             char *parts[2] = {0};
             int count = 0;
             char *token = strtok(fullMessage + 15, "\x1E");
@@ -1409,7 +1438,6 @@ void* acceptMessage(void *arg) {
                     getChatHistory(userId, friendId, sock);
                 }
             }
-            continue;
         }
         else if (strncmp(fullMessage, "getAvatar/", 10) == 0) {
             long sender = strtol(fullMessage + 10, nullptr, 10);
@@ -1475,7 +1503,6 @@ void* acceptMessage(void *arg) {
                 strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
                 printf("[%s][SAVE AVATAR] Parse error: invalid userId or missing separator\n", buffer);
                 printf("[%s][SAVE AVATAR] Received: %.100s...\n", buffer, fullMessage);
-                continue;
             }
 
             char *b64_data = ptr + 1; // base64 start
@@ -1487,7 +1514,6 @@ void* acceptMessage(void *arg) {
                 info = localtime(&rawtime);
                 strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
                 printf("[%s][SAVE AVATAR] Base64 data too short (%zu chars)\n", buffer, strlen(b64_data));
-                continue;
             }
 
             int decoded_len = 0;
@@ -1502,7 +1528,6 @@ void* acceptMessage(void *arg) {
                 strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
                 printf("[%s][SAVE AVATAR] Decode failed or image too small (%d bytes)\n", buffer, decoded_len);
                 free(png_data);
-                continue;
             }
 
             char binary_path[PATH_MAX] = {0};
@@ -1649,8 +1674,7 @@ void* acceptMessage(void *arg) {
                 printf(RED "[CRYPTO] crypto_box_beforenm failed on server\n" RESET);
             }
         }
-
-        onfail:
+            onfail:
         if (strlen(response) > 0) {
             sendPacket(sock, response);
             time_t rawtime;
@@ -1662,6 +1686,17 @@ void* acceptMessage(void *arg) {
             printf(GREEN "[%s][ACCEPT MESSAGE]" RESET " Responding for request (sock %d): %s -> %s\n", buffer, sock, fullMessage, response);
             memset(response, 0, PACKET_SIZE);
         }
+            // shift the remainder following the current message to the beginning of recvBuf —
+            // recvBuf was not modified during processing, so subsequent
+            // messages in the queue remain intact regardless of what happened to fullMessage
+                {
+                    size_t processed = msgLen + 1; // +1 за сам '\n'
+                    if (processed > (size_t)totalReceived) processed = (size_t)totalReceived;
+                    memmove(recvBuf, recvBuf + processed, totalReceived - processed);
+                    totalReceived -= (int)processed;
+                    recvBuf[totalReceived] = '\0';
+                }
+        } // end of while (newlinePos) — parsing all messages accumulated in recvBuf
     }
 
     client_disconnect:
