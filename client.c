@@ -2123,6 +2123,14 @@ int main(void) {
                         }
                     }
                     DrawTextEx(font, TextFormat("Чат с %s", friendName), (Vector2){330, 50}, 28, 2, WHITE);
+                    GuiButton((Rectangle){1190, 40, 40, 40}, "");
+                    GuiDrawIcon(122, 1195, 44, 2, DARKGRAY);
+                    //DrawRectangleLines(1185, 40, 40, 40, LIGHTGRAY);
+                    GuiButton((Rectangle){1245, 40, 40, 40}, "");
+                    GuiDrawIcon(169, 1250, 44, 2, DARKGRAY);
+                    //DrawRectangleLines(1235, 40, 40, 40, LIGHTGRAY);
+                    // TODO: аудио и видео звонок
+                    // TODO: версия 3.0
                 }
 
                 float currentY = 100 - chatScrollOffset;
