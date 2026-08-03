@@ -623,28 +623,32 @@ bool saveMessageToDB(long messageId, long senderId, long receiverId, const char 
     return true;
 }
 
-// bool getUsers(void) {
-//     if (mysql_query(conn, "SELECT userid, username FROM users")) {
-//         printf("[GET USER LIST] SELECT err: %s\n", mysql_error(conn));
-//         return false;
-//     } else {
-//         MYSQL_RES *res = mysql_store_result(conn); // loading result ro memory
-//         if (res == NULL) return false;
-//
-//         MYSQL_ROW row; // line array (char *)
-//         int num_fields = (int)mysql_num_fields(res); // number of columns
-//
-//         while ((row = mysql_fetch_row(res))) {
-//             for(int i = 0; i < num_fields; i++) {
-//                 printf("%s ", row[i] ? row[i] : "NULL");
-//             }
-//             printf("\n");
-//         }
-//
-//         mysql_free_result(res); // free memory
-//     }
-//     return true;
-// }
+char* getUserFromDB(long userId) {
+    char query[64] = {0};
+    char *response = malloc(sizeof(char)*1960);
+    sprintf(query, "SELECT avatarUrl, profileDesc FROM users WHERE userId = %ld", userId);
+    if (mysql_query(conn, query)) {
+        printf("[GET USER FROM DB] SELECT err: %s\n", mysql_error(conn));
+        return nullptr;
+    } else {
+        MYSQL_RES *res = mysql_store_result(conn); // loading result ro memory
+        if (res == NULL) {
+            mysql_free_result(res);
+            return nullptr;
+        }
+
+        MYSQL_ROW row; // line array (char *)
+        //int num_fields = (int)mysql_num_fields(res); // number of columns
+
+        while ((row = mysql_fetch_row(res))) {
+            snprintf(response, strlen(response), "%s\x1E%s", row[0], row[1]);
+            break;
+        }
+
+        mysql_free_result(res); // free memory
+    }
+    return response;
+}
 
 bool sendFriendRequest(long senderId, long receiverId) {
     if (senderId == receiverId) {
@@ -927,13 +931,13 @@ bool DecryptPacket(ClientSession *session, const char* input, char* out_plain, s
     if (!nonce_b64 || !ct_b64) return false;
 
     unsigned char nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES];
-    unsigned char ct[8192];
+    unsigned char ct[PACKET_SIZE];
     size_t nlen = 0, clen = 0;
 
     sodium_base642bin(nonce, sizeof(nonce), nonce_b64, strlen(nonce_b64), nullptr, &nlen, nullptr, sodium_base64_VARIANT_ORIGINAL);
     sodium_base642bin(ct, sizeof(ct), ct_b64, strlen(ct_b64), nullptr, &clen, nullptr, sodium_base64_VARIANT_ORIGINAL);
 
-    unsigned char decrypted[8192] = {0};
+    unsigned char decrypted[PACKET_SIZE] = {0};
     unsigned long long decrypted_len;
 
     if (crypto_aead_xchacha20poly1305_ietf_decrypt(decrypted, &decrypted_len, nullptr,
@@ -953,7 +957,7 @@ void* acceptMessage(void *arg) {
     char recvBuf[PACKET_SIZE] = {0};   // raw storage from the socket — read/shift only; never parse directly.
     char fullMessage[PACKET_SIZE] = {0}; // working copy of a SINGLE message — it is safe to perform decrypt and strtok on it
     int totalReceived = 0;
-// TODO: убрать мусорные куски (aka разрезающие конец шифрованного пакета \n)
+
     while (1) {
         memset(localBuf, 0, sizeof(localBuf));
         int bytes = read(sock, localBuf, sizeof(localBuf) - 1);
@@ -980,7 +984,7 @@ void* acceptMessage(void *arg) {
         // multiple newline-separated messages might arrive in a single read() —
         // parse everything that has accumulated in recvBuf, not just the first one
         char *newlinePos;
-        while ((newlinePos = memchr(recvBuf, '\n', totalReceived)) != NULL) {
+        while ((newlinePos = memchr(recvBuf, '\x1D', totalReceived)) != NULL) {
             size_t msgLen = (size_t)(newlinePos - recvBuf);
             if (msgLen >= sizeof(fullMessage)) msgLen = sizeof(fullMessage) - 1;
 
@@ -1003,27 +1007,34 @@ void* acceptMessage(void *arg) {
         }
 
         char decrypted[PACKET_SIZE] = {0};
-        pthread_mutex_lock(&clientsMutex);
-        ClientSession *curr = activeClients;
-        while (curr) {
-            if (curr->sock == sock) {
-                pthread_mutex_unlock(&clientsMutex);
-                if (DecryptPacket(curr, fullMessage, decrypted, sizeof(decrypted))) {
-                    // fullMessage is already an isolated copy of a single message
-                    // (we leave recvBuf and the queue of remaining messages untouched),
-                    // so we simply copy the decrypted text without using strncpy —
-                    // that would unnecessarily zero out PACKET_SIZE bytes for every message
-                    size_t dlen = strlen(decrypted);
-                    if (dlen >= sizeof(fullMessage)) dlen = sizeof(fullMessage) - 1;
-                    memcpy(fullMessage, decrypted, dlen);
-                    fullMessage[dlen] = '\0';
+        ClientSession *curr = nullptr;
+        int status = pthread_mutex_trylock(&clientsMutex);
+        if (status == 0) {
+            curr = activeClients;
+            while (curr) {
+                if (curr->sock == sock) {
+                    pthread_mutex_unlock(&clientsMutex);
+                    if (DecryptPacket(curr, fullMessage, decrypted, sizeof(decrypted))) {
+                        // fullMessage is already an isolated copy of a single message
+                        // (we leave recvBuf and the queue of remaining messages untouched),
+                        // so we simply copy the decrypted text without using strncpy —
+                        // that would unnecessarily zero out PACKET_SIZE bytes for every message
+                        size_t dlen = strlen(decrypted);
+                        if (dlen >= sizeof(fullMessage)) dlen = sizeof(fullMessage) - 1;
+                        memcpy(fullMessage, decrypted, dlen);
+                        fullMessage[dlen] = '\0';
+                        break;
+                    }
                     break;
                 }
-                break;
+                curr = curr->next;
             }
-            curr = curr->next;
+            pthread_mutex_unlock(&clientsMutex);
+        } else if (status == EBUSY) {
+            send(sock, "error/lockedThread\0", 20, 0);
+        } else {
+            send(sock, "error/unknownIssue\0", 20, 0);
         }
-        pthread_mutex_unlock(&clientsMutex);
 
         if (strcmp(fullMessage, "test/") == 0) {
             strcpy(response, "ok\n");
@@ -1140,11 +1151,11 @@ void* acceptMessage(void *arg) {
                     snprintf(response, sizeof(response), "save-profile/ok/");
                 } else {
                     snprintf(response, sizeof(response), "save-profile/error/");
-                    strncat(response, badprofile, strlen(badprofile)+1);
+                    snprintf(response+19, sizeof(response)-19, "%s", getUserFromDB(uid));
                 }
             } else {
                 snprintf(response, sizeof(response), "save-profile/badformat/");
-                strncat(response, badprofile, strlen(badprofile)+1);
+                snprintf(response+23, sizeof(response)-24, "%s", getUserFromDB(strtol(parts[0], nullptr, 10)));
             }
         }
 
@@ -1440,8 +1451,7 @@ void* acceptMessage(void *arg) {
             }
         }
         else if (strncmp(fullMessage, "getAvatar/", 10) == 0) {
-            long sender = strtol(fullMessage + 10, nullptr, 10);
-            long reciever = strtol(fullMessage + 20, nullptr, 10);
+            long uid = strtol(fullMessage + 10, nullptr, 10);
             {
                 time_t rawtime;
                 struct tm *info;
@@ -1449,10 +1459,10 @@ void* acceptMessage(void *arg) {
                 time(&rawtime);
                 info = localtime(&rawtime);
                 strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-                printf("[%s][GET AVATAR] %ld requested %ld's avatar\n", buffer, sender, reciever);
+                printf("[%s][GET AVATAR] requested %ld's avatar\n", buffer, uid);
             }
             char filepath[256];
-            snprintf(filepath, sizeof(filepath), "avatars/%ld.png", reciever);
+            snprintf(filepath, sizeof(filepath), "avatars/%ld.png", uid);
 
             FILE *f = fopen(filepath, "rb");
             if (f) {
@@ -1464,11 +1474,11 @@ void* acceptMessage(void *arg) {
                 fread(pngData, 1, fileSize, f);
                 fclose(f);
 
-                char *b64 = Base64Encode(pngData, fileSize);
+                char *b64 = Base64Encode(pngData, (int)fileSize);
                 free(pngData);
 
                 if (b64) {
-                    snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E%s", reciever, b64);
+                    snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E%s", uid, b64);
                     free(b64);
                     time_t rawtime;
                     struct tm *info;
@@ -1476,22 +1486,22 @@ void* acceptMessage(void *arg) {
                     time(&rawtime);
                     info = localtime(&rawtime);
                     strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-                    printf("[%s][GET AVATAR] sent %ld's avatar for %ld (%ld bytes)\n", buffer, reciever, sender, fileSize);
+                    printf("[%s][GET AVATAR] sent avatar for %ld (%ld bytes)\n", buffer, uid, fileSize);
                 }
             } else {
                 // if theres no avatar - sending null
-                snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E", reciever);
+                snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E", uid);
                 time_t rawtime;
                 struct tm *info;
                 char buffer[80];
                 time(&rawtime);
                 info = localtime(&rawtime);
                 strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-                printf("[%s][GET AVATAR] %ld's avatar not found\n", buffer,reciever);
+                printf("[%s][GET AVATAR] %ld's avatar not found\n", buffer,uid);
             }
         }
         else if (strncmp(fullMessage, "saveAvatar/", 11) == 0) {
-            char *ptr = fullMessage + 11;
+            char *ptr = fullMessage + 12;
             long userId = strtol(ptr, &ptr, 10);
 
             if (userId <= 0 || *ptr != '\x1E') {
