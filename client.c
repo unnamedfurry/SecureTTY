@@ -143,6 +143,7 @@ static int sock = -1;
 static struct sockaddr_in serv_addr;
 bool connected = false;
 bool initedNetwork = false;
+bool triedNetwork = false;
 int profileUpdateCode = -1;
 int serverErrorCode = -1;
 void sendMessage(const char *message);
@@ -189,8 +190,8 @@ bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max
     return true;
 }
 void* recieveMessage(void* arg) {
-    char localBuf[BUFFER_SIZE];
-    char fullMessage[PACKET_SIZE];  // large buffer
+    char localBuf[BUFFER_SIZE] = {0};
+    char fullMessage[PACKET_SIZE] = {0};  // large buffer
     int totalReceived = 0;
 
         // reading till got atleast one full answer
@@ -217,10 +218,10 @@ void* recieveMessage(void* arg) {
                 printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
                 printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
 
-                if (strncmp(fullMessage, "keyexchange/ok/", 15) == 0 && hasSessionKey==false) {
-                    char *serverPubB64 = fullMessage + 15;
+                if (strncmp(fullMessage, "keyexchange/myturn/", 19) == 0 && hasSessionKey==false) {
+                    char *serverPubB64 = fullMessage + 19;
 
-                    unsigned char serverPub[crypto_box_PUBLICKEYBYTES];
+                    unsigned char serverPub[crypto_box_PUBLICKEYBYTES] = {0};
                     size_t len = 0;
                     sodium_base642bin(serverPub, sizeof(serverPub), serverPubB64, strlen(serverPubB64),
                                      nullptr, &len, nullptr, sodium_base64_VARIANT_ORIGINAL);
@@ -235,6 +236,13 @@ void* recieveMessage(void* arg) {
                         } else {
                             printf(cRED "[CRYPTO] crypto_box_beforenm failed with code %d\n" RESET, ret);
                         }
+                    }
+                } else if (strncmp(fullMessage, "error", 5) == 0) {
+                    char *ptr = fullMessage+6;
+                    if (strcmp(ptr, "lockedThread") == 0) {
+                        serverErrorCode=1;
+                    } else if (strcmp(ptr, "unknownIssue") == 0) {
+                        serverErrorCode=2;
                     }
                 } else {
                     char decrypted[PACKET_SIZE] = {0};
@@ -313,8 +321,8 @@ void* recieveMessage(void* arg) {
                     char *saveptr1 = nullptr;
                     char *saveptr2 = nullptr;
 
-                    char *token = strtok_r(localBuf + 15, "\x1E", &saveptr1); // skipping self id
-                    token = strtok_r(NULL, "\x1E", &saveptr1);   // first friend
+                    char *token = strtok_r(fullMessage + 15, "\x1E", &saveptr1); // skipping self id
+                    //token = strtok_r(nullptr, "\x1E", &saveptr1);   // first friend
 
                     while (token && count < 100) {
                         char tokenCopy[1024];
@@ -504,13 +512,9 @@ void* recieveMessage(void* arg) {
                         token = strtok_r(nullptr, "\x1E", &saveptr);
                     }
                 }
-                else if (strncmp(fullMessage, "updateClient/messages", 21) == 0) {
-                    char *ptr = localBuf + 21;
-
-                    int totalNew = (int)strtol(ptr, &ptr, 10);
-                    ptr = strchr(ptr, '\x1E');
-                    if (!ptr) return NULL;
-                    ptr++;  // getting right to the data while skipping header and \x1E
+                else if (strncmp(fullMessage, "updateClient/messages/", 22) == 0) {
+                    char *ptr = fullMessage + 22; // TODO изза того что строка модифицирована, processed становится больше ноля, нужно сделать fullMessage immutable либо изменить концепт
+                    int totalNew = 0;
 
                     // clear old counters
                     for (int i = 0; i < 100; i++) {
@@ -537,6 +541,7 @@ void* recieveMessage(void* arg) {
                                     break;
                                 }
                             }
+                            totalNew+=count;
                         }
                         token = strtok(nullptr, "\x1E");
                     }
@@ -632,13 +637,14 @@ void* recieveMessage(void* arg) {
                     sendMessage(req);
                 }
                 else if (strncmp(fullMessage, "error", 5) == 0) {
-                    char *ptr = fullMessage+5;
+                    char *ptr = fullMessage+6;
                     if (strcmp(ptr, "lockedThread") == 0) {
                         serverErrorCode=1;
                     } else if (strcmp(ptr, "unknownIssue") == 0) {
                         serverErrorCode=2;
                     }
                 }
+                next:
 
                 // moving the end
                 size_t processed = (newline + 1) - fullMessage;
@@ -731,7 +737,7 @@ void sendMessage(const char *message) {
         usleep(5000);
         waited += 5;
         if (waited > 5000) { // 5 sec — if the server doesnt respond, dont hang forever
-            printf(cRED "[NETWORK] Timeout waiting for session key, message dropped: %s\n" RESET, message);
+            printf(cRED "[NETWORK] Timed out waiting for session key, message dropped: %s\n" RESET, message);
             return;
         }
     }
@@ -751,7 +757,7 @@ void sendMessage(const char *message) {
     } else {
         usleep(5000);
     }
-    printf("[SEND] Sent message: %s", packet);
+    printf("[SEND] Sent message: %s\n", packet);
 }
 
 
@@ -971,11 +977,6 @@ void DrawTextBoxed(Font font, const char *text, Rectangle container, float fontS
         i += (byteSize - 1);
     }
 }
-
-
-//
-//             MAIN METHOD
-//
 
 // go ask grok idk
 int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth,
@@ -1634,7 +1635,7 @@ int main(void) {
                         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
                             sliderBox.x = GetMousePosition().x-48;
                             if (sliderBox.x < 201) sliderBox.x = 201;
-                            if (sliderBox.x > 1299) userAgreed=true;
+                            if (sliderBox.x > 1298) userAgreed=true;
                         } else {
                             sliderBox.x = 201;
                         }
@@ -1662,13 +1663,13 @@ int main(void) {
                                         again:
                                         if (hasSessionKey) {
                                             memset(msgBuf, 0, BUFFER_SIZE);
-                                            snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
-                                            sendMessage(msgBuf);
-                                            memset(msgBuf, 0, sizeof(msgBuf));
                                             snprintf(msgBuf, sizeof(msgBuf), "getFriendsList/%ld", config.userId);
                                             sendMessage(msgBuf);
+                                            memset(msgBuf, 0, sizeof(msgBuf));
+                                            snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
+                                            sendMessage(msgBuf);
                                         } else {
-                                            goto again;
+                                            break;
                                         }
                                     } else {
                                         printf(cYELLOW "[WARN]" RESET "[APP INIT] User ID is 0.\n");
@@ -1700,13 +1701,52 @@ int main(void) {
                     DrawTextEx(font, "Неправильный пароль.", (Vector2){630, 500}, 32, 2, RED);
                     editMode=-1;
                 }
-                if (initedNetwork == false) {
+                if (initedNetwork == false || connected == false) {
                     Rectangle networkErrorRec = {1, 900/2-100, 1600, 200};
                     Color accentColor = {255, 79, 79, 255};
                     Color backgroundColor = {255, 157, 157, 255};
                     DrawRectangleRec(networkErrorRec, backgroundColor);
                     DrawRectangleLinesEx(networkErrorRec, 2, accentColor);
                     DrawTextEx(font, "Потеряно соединение с сервером!", (Vector2){1600/2-470, 900/2-20}, 60, 2, RED);
+                }
+                if (serverErrorCode == 1) {
+                    if (warningTimer > 1) {
+                        Rectangle warningRec = {1352, 16, 232, 40};
+                        Color accentColor = {255, 79, 79, 255};
+                        Color backgroundColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                                warningTimer=5000;
+                                serverErrorCode=-1;
+                            }
+                        }
+                        DrawTextEx(font, "Сервер занят", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+                        warningTimer-=1;
+                    } else {
+                        serverErrorCode = -1;
+                        warningTimer = 5000;
+                    }
+                } else if (serverErrorCode == 2) {
+                    if (warningTimer > 1) {
+                        Rectangle warningRec = {1352, 16, 268, 40};
+                        Color accentColor = {255, 79, 79, 255};
+                        Color backgroundColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                                warningTimer=5000;
+                                serverErrorCode=-1;
+                            }
+                        }
+                        DrawTextEx(font, "Ошибка сервера", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+                        warningTimer-=1;
+                    } else {
+                        serverErrorCode = -1;
+                        warningTimer = 5000;
+                    }
                 }
 
                 break;
@@ -1749,7 +1789,7 @@ int main(void) {
                     SaveEncryptedConfig(&config, masterPassword);
                     currentState=STATE_MAIN_CHAT;
                 }
-                if (initedNetwork == false) {
+                if (initedNetwork == false || connected == false) {
                     Rectangle networkErrorRec = {1, 900/2-100, 1600, 200};
                     Color accentColor = {255, 79, 79, 255};
                     Color backgroundColor = {255, 157, 157, 255};
@@ -1757,6 +1797,46 @@ int main(void) {
                     DrawRectangleLinesEx(networkErrorRec, 2, accentColor);
                     DrawTextEx(font, "Потеряно соединение с сервером!", (Vector2){1600/2-470, 900/2-20}, 60, 2, RED);
                 }
+                if (serverErrorCode == 1) {
+                    if (warningTimer > 1) {
+                        Rectangle warningRec = {1352, 16, 232, 40};
+                        Color accentColor = {255, 79, 79, 255};
+                        Color backgroundColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                                warningTimer=5000;
+                                serverErrorCode=-1;
+                            }
+                        }
+                        DrawTextEx(font, "Сервер занят", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+                        warningTimer-=1;
+                    } else {
+                        serverErrorCode = -1;
+                        warningTimer = 5000;
+                    }
+                } else if (serverErrorCode == 2) {
+                    if (warningTimer > 1) {
+                        Rectangle warningRec = {1352, 16, 268, 40};
+                        Color accentColor = {255, 79, 79, 255};
+                        Color backgroundColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                                warningTimer=5000;
+                                serverErrorCode=-1;
+                            }
+                        }
+                        DrawTextEx(font, "Ошибка сервера", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+                        warningTimer-=1;
+                    } else {
+                        serverErrorCode = -1;
+                        warningTimer = 5000;
+                    }
+                }
+
                 break;
             case STATE_MAIN_CHAT:
                 if (strlen(config.avatarUrl) != 0 && loadedAvatar==false) {
@@ -1917,6 +1997,12 @@ int main(void) {
                         Color backgroundColor = {255, 157, 157, 255};
                         DrawRectangleRec(warningRec, backgroundColor);
                         DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                                warningTimer=5000;
+                                profileUpdateCode=-1;
+                            }
+                        }
                         DrawTextEx(font, "Ошибка сервера", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
                         warningTimer-=1;
                     } else {
@@ -1930,6 +2016,12 @@ int main(void) {
                         Color backgroundColor = {255, 157, 157, 255};
                         DrawRectangleRec(warningRec, backgroundColor);
                         DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                                warningTimer=5000;
+                                profileUpdateCode=-1;
+                            }
+                        }
                         DrawTextEx(font, "Плохой синтаксис", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
                         warningTimer-=1;
                     } else {
@@ -1945,6 +2037,12 @@ int main(void) {
                         Color backgroundColor = {255, 157, 157, 255};
                         DrawRectangleRec(warningRec, backgroundColor);
                         DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                                warningTimer=5000;
+                                serverErrorCode=-1;
+                            }
+                        }
                         DrawTextEx(font, "Сервер занят", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
                         warningTimer-=1;
                     } else {
@@ -1958,6 +2056,12 @@ int main(void) {
                         Color backgroundColor = {255, 157, 157, 255};
                         DrawRectangleRec(warningRec, backgroundColor);
                         DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                                warningTimer=5000;
+                                serverErrorCode=-1;
+                            }
+                        }
                         DrawTextEx(font, "Ошибка сервера", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
                         warningTimer-=1;
                     } else {
@@ -2063,10 +2167,14 @@ int main(void) {
                 }
 
                 // Send message section
-                if (GuiTextBox((Rectangle){300, 839, 861, 60}, message, MAX_MESS, activeField==5)) {
+                if (GuiTextBox((Rectangle){361, 839, 880, 60}, message, MAX_MESS, activeField==5)) {
                     activeField = (activeField == 5) ? -1 : 5;
                 }
-                if (GuiButton((Rectangle){1141, 839, 160, 60}, "Отправить") || IsKeyPressed(KEY_ENTER)) {
+                GuiSetStyle(DEFAULT, TEXT_SIZE, 40);
+                if (GuiButton((Rectangle){301, 839, 60, 60}, "+")) {
+                    fileSelector=true;
+                }
+                if (GuiButton((Rectangle){1241, 839, 60, 60}, "^") || IsKeyPressed(KEY_ENTER)) {
                     if (strlen(message)!=0 && currentFriendId>0) {
                         sendMessage("createId/message");
                         message[2048]='\0';
@@ -2084,16 +2192,24 @@ int main(void) {
                         memset(message, 0, sizeof(message));
                         memset(parsed, 0, strlen(parsed));
                         chatAutoScrollAllowed=true;
+                        activeField=5;
                     }
                 }
-                if (GuiButton((Rectangle){20, 45, 100, 30}, "+ Друг")) {
+                GuiSetStyle(DEFAULT, TEXT_SIZE, 24);
+                if (GuiButton((Rectangle){13, 45, 100, 30}, "+ Друг")) {
                     isAddingFriend=true;
                 }
                 if (hasFriendRequests==true) {
                     DrawCircle(121, 44, 6, RED);
                 }
-                if (GuiButton((Rectangle){155, 45, 120, 30}, "+ Группа")) {
+                if (GuiButton((Rectangle){127, 45, 120, 30}, "+ Группа")) {
                     // TODO версия 3.0
+                }
+                if (GuiButton((Rectangle){260, 45, 30, 30}, "R")) {
+                    memset(friends, 0, sizeof(friends));
+                    char req[34] = {0};
+                    snprintf(req, 33, "getFriendsList/%ld", config.userId);
+                    sendMessage(req);
                 }
 
                 // Chat section
@@ -2123,11 +2239,11 @@ int main(void) {
                         }
                     }
                     DrawTextEx(font, TextFormat("Чат с %s", friendName), (Vector2){330, 50}, 28, 2, WHITE);
-                    GuiButton((Rectangle){1190, 40, 40, 40}, "");
-                    GuiDrawIcon(122, 1195, 44, 2, DARKGRAY);
+                    GuiButton((Rectangle){1180, 42, 36, 36}, "");
+                    GuiDrawIcon(122, 1183, 44, 2, DARKGRAY);
                     //DrawRectangleLines(1185, 40, 40, 40, LIGHTGRAY);
-                    GuiButton((Rectangle){1245, 40, 40, 40}, "");
-                    GuiDrawIcon(169, 1250, 44, 2, DARKGRAY);
+                    GuiButton((Rectangle){1235, 42, 36, 36}, "");
+                    GuiDrawIcon(169, 1238, 44, 2, DARKGRAY);
                     //DrawRectangleLines(1235, 40, 40, 40, LIGHTGRAY);
                     // TODO: аудио и видео звонок
                     // TODO: версия 3.0
@@ -2138,7 +2254,7 @@ int main(void) {
                     Message *m = &messages[i];
                     bool isMine = (m->senderId == config.userId);
 
-                    int maxBubbleWidth = (int)chatArea.width - 80;
+                    int maxBubbleWidth = (int)chatArea.width - 220;
                     int maxTextWidth = maxBubbleWidth - 40;
                     char wrapped[2048] = {0};
                     int textHeight = WrapText(m->message, wrapped, sizeof(wrapped), maxTextWidth,
@@ -2148,7 +2264,7 @@ int main(void) {
                     int bubbleHeight = textHeight + 25;
 
                     Rectangle bubble = {
-                        isMine ? (chatArea.x + chatArea.width - (float)maxBubbleWidth - 30) : (chatArea.x + 30),
+                        isMine ? (chatArea.x + chatArea.width - (float)maxBubbleWidth - 10) : (chatArea.x + 30),
                         currentY,
                         (float)maxBubbleWidth,
                         (float)bubbleHeight
@@ -2172,13 +2288,13 @@ int main(void) {
                     float scrollbarY = 100 + (chatScrollOffset / chatContentHeight) * scrollbarTrackHeight;
 
                     Rectangle scrollbarRect = {
-                        chatArea.x + chatArea.width - 14,
+                        chatArea.x + chatArea.width,
                         scrollbarY,
                         10,
                         scrollbarHeight
                     };
 
-                    DrawRectangle(chatArea.x + chatArea.width - 14, 100, 10, 680, Fade(BLACK, 0.3f));
+                    DrawRectangle(chatArea.x + chatArea.width, 100, 10, 680, Fade(BLACK, 0.3f));
 
                     Color sbColor = chatIsDraggingScrollbar ? WHITE : LIGHTGRAY;
                     DrawRectangleRec(scrollbarRect, Fade(sbColor, 0.85f));
@@ -2298,7 +2414,7 @@ int main(void) {
                     }
                 }
 
-                if (initedNetwork == false) {
+                if (initedNetwork == false || connected == false) {
                     Rectangle networkErrorRec = {1, 900/2-100, 1600, 200};
                     Color accentColor = {255, 79, 79, 255};
                     Color backgroundColor = {255, 157, 157, 255};

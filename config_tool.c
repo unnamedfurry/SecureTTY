@@ -8,7 +8,7 @@
 #include <stdbool.h>
 #include <sodium.h>
 
-#define CONFIG_FILE         "conf-copy.enc"
+#define CONFIG_FILE         "conf.enc"
 #define SALT_SIZE           crypto_pwhash_SALTBYTES
 #define HEADER_SIZE         crypto_secretstream_xchacha20poly1305_HEADERBYTES
 #define MAX_NAME 23
