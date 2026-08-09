@@ -128,7 +128,7 @@ bool sendPacket(int sock, const char *data) {
     strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
     if (sock <= 0 || data == NULL) return false;
 
-    char packet[PACKET_SIZE-1];
+    char packet[PACKET_SIZE-1] = {0};
     ClientSession *session = nullptr;
 
     pthread_mutex_lock(&clientsMutex);
@@ -387,6 +387,7 @@ void getChatHistory(long userId, long friendId, int sock) {
 
     int bufSize = BUFFER_SIZE;
     char *response = malloc(bufSize);
+    memset(response, 0, bufSize);
     if (!response) {
         printf("[%s][FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n", buffer);
         snprintf(response, 23, "getChatHistory/error");
@@ -397,7 +398,7 @@ void getChatHistory(long userId, long friendId, int sock) {
     }
     int offset = snprintf(response, bufSize, "getChatHistory/%ld\x1E", friendId);
 
-    char query[512];
+    char query[512] = {0};
     snprintf(query, sizeof(query),
         "SELECT messageId, senderId, message, sentAt "
         "FROM messages "
@@ -417,7 +418,7 @@ void getChatHistory(long userId, long friendId, int sock) {
 
     MYSQL_RES *res = mysql_store_result(conn);
     if (!res) {
-        snprintf(response, 23, "getChatHistory/empty");
+        snprintf(response, 23, "getChatHistory/empty\x1E%ld", friendId);
         sendPacket(sock, response);
         free(response);
         pthread_mutex_unlock(&mysql_mutex);
@@ -430,7 +431,7 @@ void getChatHistory(long userId, long friendId, int sock) {
             bufSize+=BUFFER_SIZE;
             char *newResponse = realloc(response, bufSize);
             if (!newResponse) {
-                printf("[%s][FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n", buffer); free(response); continue;
+                printf("[%s][FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n", buffer); free(response); return;
             }
             response = newResponse;
         }
@@ -446,11 +447,11 @@ void getChatHistory(long userId, long friendId, int sock) {
     mysql_free_result(res);
     pthread_mutex_unlock(&mysql_mutex);
 
-    if (offset > 20) {
+    if (offset > 32) {
         sendPacket(sock, response);
         printf("[%s][GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", buffer, strlen(response), userId, friendId);
     } else {
-        snprintf(response, 23, "getChatHistory/empty");
+        snprintf(response, 23, "getChatHistory/empty\x1E%ld", friendId);
         sendPacket(sock, response);
     }
     free(response);
@@ -1488,7 +1489,7 @@ void* acceptMessage(void *arg) {
             // recvBuf was not modified during processing, so subsequent
             // messages in the queue remain intact regardless of what happened to fullMessage
                 {
-                    size_t processed = msgLen + 1; // +1 за сам '\n'
+                    size_t processed = msgLen + 1; // +1 bc of '\n'
                     if (processed > (size_t)totalReceived) processed = (size_t)totalReceived;
                     memmove(recvBuf, recvBuf + processed, totalReceived - processed);
                     totalReceived -= (int)processed;

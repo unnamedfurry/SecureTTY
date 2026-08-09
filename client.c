@@ -73,12 +73,14 @@ typedef struct {
 Message messages[1000000] = {0};
 long randomId = 0L;
 long currentFriendId = 0L;
-int messagesCount = 0;
+int messagesCount = -2;
+int friendsCount = -2;
+bool isUpdatedFriends = false;
+bool isUpdatedMessages = false;
 static Texture2D friendAvatarArr[100] = {0};
 static Texture2D pendingFriendAvatarArr[100] = {0};
 bool requestedAvatarUpdate=false;
 bool hasFriendRequests = false;
-
 char masterPassword[MAX_PASS+1] = {0};
 unsigned char clientSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
 bool hasSessionKey = false;
@@ -192,6 +194,7 @@ bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max
 void* recieveMessage(void* arg) {
     char localBuf[BUFFER_SIZE] = {0};
     char fullMessage[PACKET_SIZE] = {0};  // large buffer
+    char recvBuf[PACKET_SIZE] = {0};
     int totalReceived = 0;
 
         // reading till got atleast one full answer
@@ -201,20 +204,27 @@ void* recieveMessage(void* arg) {
             if (bytes <= 0) {
                 connected = false;
                 printf("[RECEIVE] Connection lost\n");
-                return NULL;
+                break;
             }
             if (totalReceived + bytes > sizeof(fullMessage) - 1) {
                 printf("[RECEIVE] Message too big! Clearing buffer.\n");
                 totalReceived = 0;
             }
-            memcpy(fullMessage + totalReceived, localBuf, bytes);
+            memcpy(recvBuf + totalReceived, localBuf, bytes);
             totalReceived += bytes;
-            fullMessage[totalReceived] = '\0';
+            recvBuf[totalReceived] = '\0';
             printf("[DEBUG] LocalBuf has %lu bytes, string is %lu chars long and contains text `%s`. FullMessage has %lu bytes, string is %lu chars long and contains `%s` message. TotalReceived is %d.\n", sizeof(localBuf), strlen(localBuf), localBuf, sizeof(fullMessage), strlen(fullMessage), fullMessage, totalReceived);
 
-            char *newline;
-            while ((newline = strchr(fullMessage, '\n')) != NULL) {
-                *newline = '\0';
+            char *newlinePos;
+            while ((newlinePos = memchr(recvBuf, '\n', totalReceived)) != NULL) {
+                size_t msgLen = (size_t)(newlinePos - recvBuf);
+                if (msgLen >= sizeof(fullMessage)) msgLen = sizeof(fullMessage) - 1;
+
+                // Copy the message to a separate working buffer: recvBuf remains
+                // untouched, and subsequent messages in the queue are safe
+                // regardless of what decrypt/strtok do to fullMessage.
+                memcpy(fullMessage, recvBuf, msgLen);
+                fullMessage[msgLen] = '\0';
                 printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
                 printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
 
@@ -287,7 +297,7 @@ void* recieveMessage(void* arg) {
                     }
                 }
                 else if (strncmp(fullMessage, "createId/user/", 14) == 0) {
-                    long newId = atol(localBuf + 14);
+                    long newId = atol(fullMessage + 14);
                     if (newId > 0) {
                         config.userId = newId;
                         printf("[CREATE USER ID] Got new id from server: %ld\n", newId);
@@ -297,7 +307,7 @@ void* recieveMessage(void* arg) {
                     }
                 }
                 else if (strncmp(fullMessage, "createId/message/", 17) == 0) {
-                    long newId = atol(localBuf + 17);
+                    long newId = atol(fullMessage + 17);
                     if (newId > 0) {
                         randomId = newId;
                         printf("[CREATE MESSAGE ID] Got new id from server: %ld\n", newId);
@@ -307,15 +317,15 @@ void* recieveMessage(void* arg) {
                     printf("[GET FRIENDS LIST] Received new list from server\n");
 
                     // clearing past friends
-                    memset(friends, 0, sizeof(friends));
                     for (int i = 0; i < 100; i++) {
                         if (friendAvatarArr[i].id != 0) {
                             UnloadTexture(friendAvatarArr[i]);
-                            friendAvatarArr[i].id = 0;
+                            memset(&friends[i], 0, sizeof(friends[i]));
+                            memset(&friendAvatarArr[i], 0, sizeof(friendAvatarArr[i]));
                         }
                     }
-
-                    int count = 0;
+                    friendsCount = -1;
+                    isUpdatedFriends = true;
 
                     // strtok_r — reentrant version (for safe embed using)
                     char *saveptr1 = nullptr;
@@ -324,7 +334,8 @@ void* recieveMessage(void* arg) {
                     char *token = strtok_r(fullMessage + 15, "\x1E", &saveptr1); // skipping self id
                     //token = strtok_r(nullptr, "\x1E", &saveptr1);   // first friend
 
-                    while (token && count < 100) {
+                    while (token && friendsCount < 100) {
+                        friendsCount++;
                         char tokenCopy[1024];
                         strncpy(tokenCopy, token, sizeof(tokenCopy)-1);
                         tokenCopy[sizeof(tokenCopy)-1] = '\0';
@@ -333,51 +344,51 @@ void* recieveMessage(void* arg) {
                         int field = 0;
 
                         while (subtoken && field < 4) {
-                            if (field == 0) strncpy(friends[count].name, subtoken, MAX_NAME);
-                            else if (field == 1) friends[count].userId = strtol(subtoken, nullptr, 10);
-                            else if (field == 2) strncpy(friends[count].avatarUrl, subtoken, MAX_AVATAR);
-                            else if (field == 3) strncpy(friends[count].profileDescription, subtoken, MAX_DESC);
+                            if (field == 0) strncpy(friends[friendsCount].name, subtoken, MAX_NAME);
+                            else if (field == 1) friends[friendsCount].userId = strtol(subtoken, nullptr, 10);
+                            else if (field == 2) strncpy(friends[friendsCount].avatarUrl, subtoken, MAX_AVATAR);
+                            else if (field == 3) strncpy(friends[friendsCount].profileDescription, subtoken, MAX_DESC);
 
                             field++;
                             subtoken = strtok_r(nullptr, "\x1F", &saveptr2);
                         }
 
-                        if (friends[count].userId > 0) {
-                            friends[count].newMessageCount = 0;
-                            count++;
+                        if (friends[friendsCount].userId > 0) {
+                            friends[friendsCount].newMessageCount = 0;
                         }
 
                         token = strtok_r(nullptr, "\x1E", &saveptr1);
                     }
 
-                    printf("[GET FRIENDS LIST] Successfully loaded %d friends\n", count);
+                    printf("[GET FRIENDS LIST] Successfully loaded %d friends\n", friendsCount);
                     requestedAvatarUpdate = true;
                 }
                 else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
-                    char *dataStart = strchr(localBuf + 15, '\x1E');
-                    if (!dataStart) {
+                    char *dataStart = malloc(sizeof(char)*(strlen(fullMessage)+2));
+                    memcpy(dataStart, fullMessage, strlen(fullMessage)+1);
+                    for (int i=0; i<1000000; i++) {
+                        memset(&messages[i], 0, sizeof(messages[i]));
+                    }
+                    if (strncmp(dataStart+15, "empty", 5) == 0) {
                         printf("[GET CHAT HISTORY] History is empty\n");
                         messagesCount = 0;
-                        currentFriendId = strtol(localBuf + 15, nullptr, 10);
-                        return NULL;
+                        goto next;
                     }
 
-                    dataStart++;
-                    long friendId = strtol(localBuf + 15, nullptr, 10);
+                    long friendId = strtol(fullMessage + 15, nullptr, 10);
 
                     // copy all at a time
-                    size_t dataLen = strlen(dataStart) + 1;
+                    size_t dataLen = strlen(dataStart);
                     char *dataCopy = malloc(dataLen);
-                    if (!dataCopy) return NULL;
+                    if (!dataCopy) goto next;
+                    memcpy(dataCopy, dataStart+26, dataLen);
 
-                    memcpy(dataCopy, dataStart, dataLen);
-
-                    messagesCount = 0;
-                    int loaded = 0;
-
+                    messagesCount = -1;
+                    isUpdatedMessages = true;
                     char *p = dataCopy;
 
                     while (p && *p && messagesCount < 999999) {
+                        messagesCount++;
                         // locating the end of the block
                         char *record_end = strchr(p, '\x1E');
                         if (record_end) *record_end = '\0';   // temporary cutting
@@ -412,9 +423,6 @@ void* recieveMessage(void* arg) {
 
                                 strncpy(messages[messagesCount].message, q, 2048);
                                 messages[messagesCount].message[2049] = '\0';
-
-                                messagesCount++;
-                                loaded++;
                             }
 
                         }
@@ -430,7 +438,7 @@ void* recieveMessage(void* arg) {
                     free(dataCopy);
                     currentFriendId = friendId;
 
-                    printf("[GET CHAT HISTORY] Loaded %d messages with %ld\n", loaded, friendId);
+                    printf("[GET CHAT HISTORY] Loaded %d messages with %ld\n", messagesCount, friendId);
                 }
                 else if (strncmp(fullMessage, "err", 3) == 0) {
                     printf("[ERROR] Server returned error for past action\n");
@@ -438,7 +446,9 @@ void* recieveMessage(void* arg) {
                 else if (strncmp(fullMessage, "newMessage\x1E", 11) == 0) {
                     char *parts[4] = {0};
                     int cnt = 0;
-                    char *token = strtok(localBuf + 11, "\x1F");
+                    char *copy = malloc(sizeof(char)*(strlen(fullMessage)+2));
+                    memcpy(copy, fullMessage, strlen(fullMessage)+1);
+                    char *token = strtok(copy + 11, "\x1F");
 
                     while (token && cnt < 4) {
                         parts[cnt++] = token;
@@ -483,7 +493,7 @@ void* recieveMessage(void* arg) {
                     }
                     hasFriendRequests = false;
 
-                    char *ptr = localBuf+17;
+                    char *ptr = fullMessage+17;
                     char *saveptr = nullptr;
                     char *token = strtok_r(ptr, "\x1E", &saveptr);
                     int count = 0;
@@ -513,7 +523,8 @@ void* recieveMessage(void* arg) {
                     }
                 }
                 else if (strncmp(fullMessage, "updateClient/messages/", 22) == 0) {
-                    char *ptr = fullMessage + 22; // TODO изза того что строка модифицирована, processed становится больше ноля, нужно сделать fullMessage immutable либо изменить концепт
+                    char *ptr = malloc(sizeof(char)*(strlen(fullMessage)+2));
+                    memcpy(ptr, fullMessage, strlen(fullMessage)+1);
                     int totalNew = 0;
 
                     // clear old counters
@@ -647,10 +658,12 @@ void* recieveMessage(void* arg) {
                 next:
 
                 // moving the end
-                size_t processed = (newline + 1) - fullMessage;
+                size_t processed = msgLen + 1; // +1 bc of '\n'
                 printf("[DEBUG] Processed if %lu.\n", processed);
-                memmove(fullMessage, newline + 1, totalReceived - processed);
-                totalReceived -= processed;
+                if (processed > (size_t)totalReceived) processed = (size_t)totalReceived;
+                memmove(recvBuf, recvBuf + processed, totalReceived - processed);
+                totalReceived -= (int)processed;
+                recvBuf[totalReceived] = '\0';
             }
         }
     return NULL;
@@ -2071,69 +2084,75 @@ int main(void) {
                 }
 
                 // Friend section
-                float friendStartY = 90.0f;
-                for (int i = 0; i < 100 && friends[i].userId != 0; i++) {
-                    Rectangle friendRect = { 10, friendStartY, 280, 70 };
-
-                    if (CheckCollisionPointRec(GetMousePosition(), friendRect) && isAddingFriend==false && fileSelector==false) {
-                        DrawRectangleRec(friendRect, (Color){60, 60, 70, 255});
-                        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                            if (friends[i].userId != currentFriendId) {
+                if (friendsCount > 0) {
+                    friendsCount += 1*isUpdatedFriends;
+                    isUpdatedFriends = false;
+                    float friendStartY = 90.0f;
+                    for (int i=0; i<friendsCount && friends[i].userId != 0; i++) {
+                        Rectangle friendRect = { 10, friendStartY, 280, 70 };
+                        if (CheckCollisionPointRec(GetMousePosition(), friendRect) && isAddingFriend==false && fileSelector==false) {
+                            DrawRectangleRec(friendRect, (Color){60, 60, 70, 255});
+                            if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 currentFriendId = friends[i].userId;
-                                messagesCount = 0;
                                 friends[i].newMessageCount = 0;
 
-                                char req[64];
-                                snprintf(req, sizeof(req), "getChatHistory/%ld\x1E%ld", config.userId, currentFriendId);
+                                char req[96];
+                                snprintf(req, sizeof(req), "getChatHistory/%ld\x1E%ld", config.userId, friends[i].userId);
                                 sendMessage(req);
-                            }
 
+                                chatAutoScrollAllowed=true;
+                            }
+                        } else {
+                            DrawRectangleRec(friendRect, (Color){50, 50, 60, 255});
+                        }
+                        DrawRectangleLinesEx(friendRect, 2, GRAY);
+
+                        // friend avatar
+                        Rectangle avatarRect2 = { 20, friendStartY + 8, 54, 54 };
+                        DrawTexturePro(friendAvatarArr[i], (Rectangle){0, 0, 54, 54}, avatarRect2, (Vector2){0, 0}, 0.0f, WHITE);
+                        DrawRectangleLinesEx(avatarRect2, 2, LIGHTGRAY);
+
+                        // name + description
+                        DrawTextEx(font, friends[i].name, (Vector2){85, friendStartY + 12}, 24, 2, WHITE);
+
+                        if (friends[i].newMessageCount > 0) {
+                            if (friends[i].userId != currentFriendId) {
+                                char badge[16] = {0};
+                                snprintf(badge, sizeof(badge), "%d", friends[i].newMessageCount);
+                                int textW = MeasureText(badge, 20);
+                                Rectangle badgeRect = {240, friendStartY + 12, (float)textW + 12, 24};
+
+                                DrawRectangleRec(badgeRect, RED);
+                                DrawText(badge, (int)badgeRect.x + 6, (int)badgeRect.y + 4, 20, WHITE);
+                            }
                             chatAutoScrollAllowed=true;
                         }
-                    } else {
-                        DrawRectangleRec(friendRect, (Color){50, 50, 60, 255});
-                    }
-                    DrawRectangleLinesEx(friendRect, 2, GRAY);
 
-                    // friend avatar
-                    Rectangle avatarRect2 = { 20, friendStartY + 8, 54, 54 };
-                    DrawTexturePro(friendAvatarArr[i], (Rectangle){0, 0, 54, 54}, avatarRect2, (Vector2){0, 0}, 0.0f, WHITE);
-                    DrawRectangleLinesEx(avatarRect2, 2, LIGHTGRAY);
+                        if (strlen(friends[i].profileDescription) > 0) {
+                            char shortDesc[71] = {0};
+                            strncpy(shortDesc, friends[i].profileDescription, 70);
+                            shortDesc[70] = '\0';
+                            if (strlen(friends[i].profileDescription) > 30) {
+                                // looking for last UTF-8 symbol before 30th slot
+                                int pos = 30;
+                                while (pos > 0 && (shortDesc[pos] & 0xC0) == 0x80) {
+                                    pos--;  // rolling back to the start of UTF-8 symbol
+                                }
 
-                    // name + description
-                    DrawTextEx(font, friends[i].name, (Vector2){85, friendStartY + 12}, 24, 2, WHITE);
-
-                    if (friends[i].newMessageCount > 0) {
-                        if (friends[i].userId != currentFriendId) {
-                            char badge[16] = {0};
-                            snprintf(badge, sizeof(badge), "%d", friends[i].newMessageCount);
-                            int textW = MeasureText(badge, 20);
-                            Rectangle badgeRect = {240, friendStartY + 12, (float)textW + 12, 24};
-
-                            DrawRectangleRec(badgeRect, RED);
-                            DrawText(badge, (int)badgeRect.x + 6, (int)badgeRect.y + 4, 20, WHITE);
-                        }
-                        chatAutoScrollAllowed=true;
-                    }
-
-                    if (strlen(friends[i].profileDescription) > 0) {
-                        char shortDesc[71] = {0};
-                        strncpy(shortDesc, friends[i].profileDescription, 70);
-                        shortDesc[70] = '\0';
-                        if (strlen(friends[i].profileDescription) > 30) {
-                            // looking for last UTF-8 symbol before 30th slot
-                            int pos = 30;
-                            while (pos > 0 && (shortDesc[pos] & 0xC0) == 0x80) {
-                                pos--;  // rolling back to the start of UTF-8 symbol
+                                shortDesc[pos] = '\0';
+                                strcat(shortDesc, "...");
                             }
-
-                            shortDesc[pos] = '\0';
-                            strcat(shortDesc, "...");
+                            DrawTextEx(font, shortDesc, (Vector2){85, friendStartY + 42}, 18, 2, LIGHTGRAY);
                         }
-                        DrawTextEx(font, shortDesc, (Vector2){85, friendStartY + 42}, 18, 2, LIGHTGRAY);
-                    }
 
-                    friendStartY += 80.0f;
+                        friendStartY += 80.0f;
+                    }
+                } else if (friendsCount == 0) {
+                    Vector2 result = MeasureTextEx(font, "--пусто--", 20, 2);
+                    DrawTextEx(font, "--пусто--", (Vector2){(301.0f/2-result.x/2), 40}, 20, 2, LIGHTGRAY);
+                } else if (friendsCount == -1) {
+                    Vector2 result = MeasureTextEx(font, "--ошибка чтения--", 20, 2);
+                    DrawTextEx(font, "--ошибка чтения--", (Vector2){(301.0f/2-result.x/2), 40}, 20, 2, LIGHTGRAY);
                 }
 
                 // Update friend avatars section
@@ -2206,7 +2225,9 @@ int main(void) {
                     // TODO версия 3.0
                 }
                 if (GuiButton((Rectangle){260, 45, 30, 30}, "R")) {
-                    memset(friends, 0, sizeof(friends));
+                    for (int i=0; i<100; i++) {
+                        memset(&friends[i], 0, sizeof(friends[i]));
+                    }
                     char req[34] = {0};
                     snprintf(req, 33, "getFriendsList/%ld", config.userId);
                     sendMessage(req);
@@ -2214,24 +2235,10 @@ int main(void) {
 
                 // Chat section
                 Rectangle chatArea = {300, 80, 980, 700};
-                for (int i = 0; i < messagesCount; i++) {
-                    Message *m = &messages[i];
-                    const int maxTextW = (int)chatArea.width - 120;
-
-                    char dummy[2048] = {0};
-                    int textH = WrapText(m->message, dummy, sizeof(dummy), maxTextW, font, 22, 2);
-                    chatContentHeight += (float)textH + 25 + 18;   // text height + indents
-                }
-                if (chatContentHeight < 680) chatScrollOffset = 0;
-                float maxScroll = fmaxf(0.0f, chatContentHeight - 680.0f);
-                chatScrollOffset = clamp(chatScrollOffset, 0.0f, maxScroll);
-                if (chatAutoScrollAllowed==true && messagesCount > 0) {
-                    chatScrollOffset = maxScroll;
-                }
 
                 // chat header
                 if (currentFriendId != 0) {
-                    char *friendName = "Неизвестный";
+                    char *friendName = "НН";
                     for (int k=0; k<100; k++) {
                         if (friends[k].userId == currentFriendId) {
                             friendName = friends[k].name;
@@ -2249,75 +2256,101 @@ int main(void) {
                     // TODO: версия 3.0
                 }
 
-                float currentY = 100 - chatScrollOffset;
-                for (int i = 0; i < messagesCount; i++) {
-                    Message *m = &messages[i];
-                    bool isMine = (m->senderId == config.userId);
+                // Message section
+                if (messagesCount > 0) {
+                    messagesCount += 1*isUpdatedMessages;
+                    isUpdatedMessages = false;
+                    for (int i = 0; i<messagesCount; i++) {
+                        Message *m = &messages[i];
+                        const int maxTextW = (int)chatArea.width - 120;
 
-                    int maxBubbleWidth = (int)chatArea.width - 220;
-                    int maxTextWidth = maxBubbleWidth - 40;
-                    char wrapped[2048] = {0};
-                    int textHeight = WrapText(m->message, wrapped, sizeof(wrapped), maxTextWidth,
-                                             font, 22, 2);
-                    Vector2 tMeasure = MeasureTextEx(font, wrapped, (float)22, 2.0f);
-                    maxBubbleWidth = (int)tMeasure.x + 40;
-                    int bubbleHeight = textHeight + 25;
-
-                    Rectangle bubble = {
-                        isMine ? (chatArea.x + chatArea.width - (float)maxBubbleWidth - 10) : (chatArea.x + 30),
-                        currentY,
-                        (float)maxBubbleWidth,
-                        (float)bubbleHeight
-                    };
-
-                    if (bubble.y > 80 && bubble.y + (float)bubbleHeight < 840) {
-                        Color bubbleColor = isMine ? (Color){0, 120, 215, 255} : (Color){60, 60, 70, 255};
-
-                        DrawRectangleRec(bubble, bubbleColor);
-                        DrawRectangleLinesEx(bubble, 2, isMine ? SKYBLUE : LIGHTGRAY);
-
-                        DrawWrappedText(wrapped, (Vector2){bubble.x + 20, bubble.y + 12}, font, 22, 2, WHITE);
+                        char dummy[2048] = {0};
+                        int textH = WrapText(m->message, dummy, sizeof(dummy), maxTextW, font, 22, 2);
+                        chatContentHeight += (float)textH + 25 + 18;   // text height + indents
+                    }
+                    if (chatContentHeight < 680) chatScrollOffset = 0;
+                    float maxScroll = fmaxf(0.0f, chatContentHeight - 680.0f);
+                    chatScrollOffset = clamp(chatScrollOffset, 0.0f, maxScroll);
+                    if (chatAutoScrollAllowed==true && messagesCount > 0) {
+                        chatScrollOffset = maxScroll;
                     }
 
-                    currentY += (float)bubbleHeight + 18;
-                }
+                    float currentY = 100 - chatScrollOffset;
+                    for (int i = 0; i < messagesCount; i++) {
+                        Message *m = &messages[i];
+                        bool isMine = (m->senderId == config.userId);
 
-                if (chatContentHeight > 680) {
-                    float scrollbarTrackHeight = 680;
-                    float scrollbarHeight = (680 / chatContentHeight) * scrollbarTrackHeight;
-                    float scrollbarY = 100 + (chatScrollOffset / chatContentHeight) * scrollbarTrackHeight;
+                        int maxBubbleWidth = (int)chatArea.width - 220;
+                        int maxTextWidth = maxBubbleWidth - 40;
+                        char wrapped[2048] = {0};
+                        int textHeight = WrapText(m->message, wrapped, sizeof(wrapped), maxTextWidth,
+                                                 font, 22, 2);
+                        Vector2 tMeasure = MeasureTextEx(font, wrapped, (float)22, 2.0f);
+                        maxBubbleWidth = (int)tMeasure.x + 40;
+                        int bubbleHeight = textHeight + 25;
 
-                    Rectangle scrollbarRect = {
-                        chatArea.x + chatArea.width,
-                        scrollbarY,
-                        10,
-                        scrollbarHeight
-                    };
+                        Rectangle bubble = {
+                            isMine ? (chatArea.x + chatArea.width - (float)maxBubbleWidth - 10) : (chatArea.x + 30),
+                            currentY,
+                            (float)maxBubbleWidth,
+                            (float)bubbleHeight
+                        };
 
-                    DrawRectangle(chatArea.x + chatArea.width, 100, 10, 680, Fade(BLACK, 0.3f));
+                        if (bubble.y > 80 && bubble.y + (float)bubbleHeight < 840) {
+                            Color bubbleColor = isMine ? (Color){0, 120, 215, 255} : (Color){60, 60, 70, 255};
 
-                    Color sbColor = chatIsDraggingScrollbar ? WHITE : LIGHTGRAY;
-                    DrawRectangleRec(scrollbarRect, Fade(sbColor, 0.85f));
+                            DrawRectangleRec(bubble, bubbleColor);
+                            DrawRectangleLinesEx(bubble, 2, isMine ? SKYBLUE : LIGHTGRAY);
 
-                    Vector2 mouse = GetMousePosition();
+                            DrawWrappedText(wrapped, (Vector2){bubble.x + 20, bubble.y + 12}, font, 22, 2, WHITE);
+                        }
 
-                    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                        if (CheckCollisionPointRec(mouse, scrollbarRect)) {
-                            chatIsDraggingScrollbar = true;
+                        currentY += (float)bubbleHeight + 18;
+                    }
+
+                    if (chatContentHeight > 680) {
+                        float scrollbarTrackHeight = 680;
+                        float scrollbarHeight = (680 / chatContentHeight) * scrollbarTrackHeight;
+                        float scrollbarY = 100 + (chatScrollOffset / chatContentHeight) * scrollbarTrackHeight;
+
+                        Rectangle scrollbarRect = {
+                            chatArea.x + chatArea.width,
+                            scrollbarY,
+                            10,
+                            scrollbarHeight
+                        };
+
+                        DrawRectangle(chatArea.x + chatArea.width, 100, 10, 680, Fade(BLACK, 0.3f));
+
+                        Color sbColor = chatIsDraggingScrollbar ? WHITE : LIGHTGRAY;
+                        DrawRectangleRec(scrollbarRect, Fade(sbColor, 0.85f));
+
+                        Vector2 mouse = GetMousePosition();
+
+                        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+                            if (CheckCollisionPointRec(mouse, scrollbarRect)) {
+                                chatIsDraggingScrollbar = true;
+                                chatAutoScrollAllowed=false;
+                            }
+                        }
+
+                        if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
+                            chatIsDraggingScrollbar = false;
                             chatAutoScrollAllowed=false;
                         }
-                    }
 
-                    if (IsMouseButtonReleased(MOUSE_LEFT_BUTTON)) {
-                        chatIsDraggingScrollbar = false;
-                        chatAutoScrollAllowed=false;
+                        if (chatIsDraggingScrollbar) {
+                            chatAutoScrollAllowed=false;
+                            float mouseRelative = mouse.y - scrollbarHeight/2 - 100;
+                            chatScrollOffset = (mouseRelative / 680) * chatContentHeight;
+                        }
                     }
-
-                    if (chatIsDraggingScrollbar) {
-                        chatAutoScrollAllowed=false;
-                        float mouseRelative = mouse.y - scrollbarHeight/2 - 100;
-                        chatScrollOffset = (mouseRelative / 680) * chatContentHeight;
-                    }
+                } else if (messagesCount == 0 && currentFriendId != 0) {
+                    Vector2 result = MeasureTextEx(font, "--пусто--", 32, 2);
+                    DrawTextEx(font, "--пусто--", (Vector2){(1301.0f/2-result.x/2), 600}, 32, 2, LIGHTGRAY);
+                } else if (messagesCount == -1) {
+                    Vector2 result = MeasureTextEx(font, "--ошибка чтения--", 32, 2);
+                    DrawTextEx(font, "--ошибка чтения--", (Vector2){(1301.0f/2-result.x/2), 600}, 32, 2, LIGHTGRAY);
                 }
 
                 // Adding friend field section
@@ -2348,10 +2381,6 @@ int main(void) {
                             sendMessage(cmd);
                             printf("[ACCEPT FRIEND] Accepted friend request from %ld\n", targetId);
 
-                            // char req[64];
-                            // snprintf(req, sizeof(req), "getFriendsList/%ld", config.userId);
-                            // sendMessage(req);
-
                             for (int i=0; i<100 && pendingFriends[i].userId!=0; i++) {
                                 char id[15] = {0};
                                 snprintf(id, 14, "%ld", pendingFriends[i].userId);
@@ -2365,6 +2394,10 @@ int main(void) {
                             }
                         }
                         hasFriendRequests=false;
+                    }
+
+                    if (IsKeyPressed(KEY_ESCAPE) && currentFriendId>0 && fileSelector==false && isAddingFriend==false) {
+                        currentFriendId=0;
                     }
 
                     float startY = 900/2.0f -70;
