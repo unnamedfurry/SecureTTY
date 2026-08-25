@@ -57,7 +57,7 @@ pthread_mutex_t mysql_mutex = PTHREAD_MUTEX_INITIALIZER;
 //
 //      DATABASE STRUCTRURE
 //
-//        UnChat Database
+//      securetty Database
 //       /               \
 // users table       messages table
 //
@@ -1519,8 +1519,8 @@ int main(void) {
     }
     conn = mysql_init(nullptr);
 
-    if (mysql_real_connect(conn, HOST, MYSQL_USER, MYSQL_PASSWORD, "unchat", 0, nullptr, 0) == NULL) {
-    //if (mysql_real_connect(conn, "localhost", "root", "681137", "unchat", 0, nullptr, 0) == NULL) {
+    if (mysql_real_connect(conn, HOST, MYSQL_USER, MYSQL_PASSWORD, "securetty", 0, nullptr, 0) == NULL) {
+    //if (mysql_real_connect(conn, "localhost", "root", "681137", "securetty", 0, nullptr, 0) == NULL) {
         time_t rawtime;
         struct tm *info;
         char buffer[80];

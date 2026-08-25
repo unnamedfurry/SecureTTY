@@ -1545,7 +1545,7 @@ AppState currentState = STATE_MASTER_PASSWORD;
 #define RGBA_TO_HEX(r, g, b, a) (((r) << 24) | ((g) << 16) | ((b) << 8) | (a))
 int main(void) {
     printf("\n");
-    InitWindow(1600, 900, "UnChat - BETA 2.0");
+    InitWindow(1600, 900, "SecureTTY - BETA 2.0");
     int codepoints[1024] = {0};
     int count = 0;
     for (int i = 32; i < 128; i++) codepoints[count++] = i;
