@@ -1249,11 +1249,13 @@ void* acceptMessage(void *arg) {
                     while (curr2) {
                         if (curr2->sock == sock) {
                             curr2->loggedIn=true;
+                            printf("[%s][LOGIN CLIENT] User %ld\n authorized successfully\n", buffer, userId);
                         }
                         curr2 = curr2->next;
                     }
                     pthread_mutex_unlock(&clientsMutex);
                 } else {
+                    printf("[%s][LOGIN CLIENT] User %ld\n failed to authorize: incorrect data\n", buffer, userId);
                     unregisterClient(sock);
                     close(sock);
                 }

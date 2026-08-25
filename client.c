@@ -317,13 +317,7 @@ void* recieveMessage(void* arg) {
                     printf("[GET FRIENDS LIST] Received new list from server\n");
 
                     // clearing past friends
-                    for (int i = 0; i < 100; i++) {
-                        if (friendAvatarArr[i].id != 0) {
-                            UnloadTexture(friendAvatarArr[i]);
-                            memset(&friends[i], 0, sizeof(friends[i]));
-                            memset(&friendAvatarArr[i], 0, sizeof(friendAvatarArr[i]));
-                        }
-                    }
+                    memset(pendingFriendAvatarArr, 0, sizeof(pendingFriendAvatarArr));
                     friendsCount = -1;
                     isUpdatedFriends = true;
 
@@ -485,12 +479,7 @@ void* recieveMessage(void* arg) {
                 }
                 else if (strncmp(fullMessage, "newFriendRequest/", 17) == 0) {
                     memset(pendingFriends, 0, sizeof(pendingFriends));
-                    for (int i=0; i<100; i++) {
-                        if (pendingFriendAvatarArr[i].id != 0) {
-                            UnloadTexture(pendingFriendAvatarArr[i]);
-                            pendingFriendAvatarArr[i].id = 0;
-                        }
-                    }
+                    memset(pendingFriendAvatarArr, 0, sizeof(pendingFriendAvatarArr));
                     hasFriendRequests = false;
 
                     char *ptr = fullMessage+17;
@@ -563,12 +552,7 @@ void* recieveMessage(void* arg) {
                     printf("[FRIEND REQUESTS] Received pending requests\n");
 
                     memset(pendingFriends, 0, sizeof(pendingFriends));
-                    for (int i=0; i<100; i++) {
-                        if (pendingFriendAvatarArr[i].id != 0) {
-                            UnloadTexture(pendingFriendAvatarArr[i]);
-                            pendingFriendAvatarArr[i].id = 0;
-                        }
-                    }
+                    memset(pendingFriendAvatarArr, 0, sizeof(pendingFriendAvatarArr));
                     hasFriendRequests = false;
 
                     char *ptr = fullMessage+28;
@@ -777,6 +761,7 @@ void sendMessage(const char *message) {
 //
 //             CONFIG LOAD AND SECURITY MODULE
 //
+
 
 #define SALT_SIZE crypto_pwhash_SALTBYTES
 #define HEADER_SIZE crypto_secretstream_xchacha20poly1305_HEADERBYTES
@@ -1557,6 +1542,7 @@ typedef enum {
     STATE_MAIN_CHAT
 } AppState;
 AppState currentState = STATE_MASTER_PASSWORD;
+#define RGBA_TO_HEX(r, g, b, a) (((r) << 24) | ((g) << 16) | ((b) << 8) | (a))
 int main(void) {
     printf("\n");
     InitWindow(1600, 900, "UnChat - BETA 2.0");
@@ -1598,10 +1584,42 @@ int main(void) {
     int warningTimer = 5000;
     Rectangle sliderBox = {201, 601, 98, 98};
 
+    Color backgroundColor = {40, 40, 40, 255};
+    Color background2Color = {24, 24, 24, 255};
+    Color mainColor = {255, 255, 255, 255};
+    Color secondaryColor = {128, 128, 128, 255};
+    Color secondary2Color = {218, 165, 32, 255};
+    Color plateColor = {70, 70, 60, 255};
+    GuiSetStyle(BUTTON, BORDER_COLOR_NORMAL, RGBA_TO_HEX(0, 0, 0, 0));
+    GuiSetStyle(BUTTON, BORDER_COLOR_FOCUSED, RGBA_TO_HEX(0, 0, 0, 0));
+    GuiSetStyle(BUTTON, BORDER_COLOR_DISABLED, RGBA_TO_HEX(0, 0, 0, 0));
+    GuiSetStyle(BUTTON, BORDER_COLOR_PRESSED, RGBA_TO_HEX(0, 0, 0, 0));
+    GuiSetStyle(BUTTON, BASE_COLOR_NORMAL, RGBA_TO_HEX(70, 70, 60, 255));
+    GuiSetStyle(BUTTON, BASE_COLOR_FOCUSED, RGBA_TO_HEX(218, 165, 32, 255));
+    GuiSetStyle(BUTTON, BASE_COLOR_DISABLED, RGBA_TO_HEX(70, 70, 60, 255));
+    GuiSetStyle(BUTTON, BASE_COLOR_PRESSED, RGBA_TO_HEX(218, 165, 32, 255));
+    GuiSetStyle(BUTTON, TEXT_COLOR_NORMAL, RGBA_TO_HEX(255, 255, 255, 255));
+    GuiSetStyle(BUTTON, TEXT_COLOR_FOCUSED, RGBA_TO_HEX(255, 255, 255, 255));
+    GuiSetStyle(BUTTON, TEXT_COLOR_DISABLED, RGBA_TO_HEX(255, 255, 255, 255));
+    GuiSetStyle(BUTTON, TEXT_COLOR_PRESSED, RGBA_TO_HEX(255, 255, 255, 255));
+    GuiSetStyle(TEXTBOX, BORDER_COLOR_NORMAL, RGBA_TO_HEX(70, 70, 60, 255));
+    GuiSetStyle(TEXTBOX, BORDER_COLOR_FOCUSED, RGBA_TO_HEX(218, 165, 32, 255));
+    GuiSetStyle(TEXTBOX, BORDER_COLOR_DISABLED, RGBA_TO_HEX(70, 70, 60, 255));
+    GuiSetStyle(TEXTBOX, BORDER_COLOR_PRESSED, RGBA_TO_HEX(218, 165, 32, 255));
+    GuiSetStyle(TEXTBOX, BASE_COLOR_NORMAL, RGBA_TO_HEX(0, 0, 0, 0));
+    GuiSetStyle(TEXTBOX, BASE_COLOR_FOCUSED, RGBA_TO_HEX(70, 70, 60, 255));
+    GuiSetStyle(TEXTBOX, BASE_COLOR_DISABLED, RGBA_TO_HEX(0, 0, 0, 0));
+    GuiSetStyle(TEXTBOX, BASE_COLOR_PRESSED, RGBA_TO_HEX(70, 70, 60, 255));
+    GuiSetStyle(TEXTBOX, TEXT_COLOR_NORMAL, RGBA_TO_HEX(255, 255, 255, 255));
+    GuiSetStyle(TEXTBOX, TEXT_COLOR_FOCUSED, RGBA_TO_HEX(255, 255, 255, 255));
+    GuiSetStyle(TEXTBOX, TEXT_COLOR_DISABLED, RGBA_TO_HEX(255, 255, 255, 255));
+    GuiSetStyle(TEXTBOX, TEXT_COLOR_PRESSED, RGBA_TO_HEX(255, 255, 255, 255));
+
     bool userAgreed = false;
     int editMode = -1;
     bool wrongPass = false;
     bool triedAvatar = false;
+    int profilePage = 1;
 
     while (!WindowShouldClose()) {
         float chatContentHeight = 0.0f;
@@ -1635,15 +1653,16 @@ int main(void) {
 
         BeginDrawing();
         ClearBackground((Color){ 40, 40, 40, 255 });
+        DrawRectangleGradientEx((Rectangle){0, 0, 1600, 900}, backgroundColor, background2Color, background2Color, backgroundColor);
 
         switch (currentState) {
             case STATE_MASTER_PASSWORD:
 
                 initedNetwork = initNetwork();
-                DrawTextEx(font, "Мастер-пароль приложения:", (Vector2){480, 100}, 48, 2, LIGHTGRAY);
+                DrawTextEx(font, "Мастер-пароль приложения:", (Vector2){480, 100}, 48, 2, mainColor);
                 if (userAgreed==false) {
                     Rectangle sliderRail = {200, 600, 1200, 100};
-                    DrawRectangleLinesEx(sliderRail, 2, LIGHTGRAY);
+                    DrawRectangleLinesEx(sliderRail, 2, mainColor);
                     if (CheckCollisionPointRec(GetMousePosition(), sliderBox)) {
                         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
                             sliderBox.x = GetMousePosition().x-48;
@@ -1653,11 +1672,11 @@ int main(void) {
                             sliderBox.x = 201;
                         }
                     }
-                    DrawTextEx(font, "пароль есть только у меня и его никто не видит", (Vector2){400, 632}, 32, 2, GRAY);
-                    DrawRectangleRec(sliderBox, LIGHTGRAY);
-                    DrawRectangleLinesEx(sliderBox, 2, GRAY);
-                    GuiDrawIcon(115, (int)sliderBox.x+16, (int)sliderBox.y+16, 4, GRAY);
-                    DrawRectangle(201, 601, (sliderBox.x - 201), 98, GRAY);
+                    DrawTextEx(font, "пароль есть только у меня и его никто не видит", (Vector2){400, 632}, 32, 2, secondaryColor);
+                    DrawRectangleRec(sliderBox, mainColor);
+                    DrawRectangleLinesEx(sliderBox, 2, mainColor);
+                    GuiDrawIcon(115, (int)sliderBox.x+16, (int)sliderBox.y+16, 4, secondaryColor);
+                    DrawRectangle(201, 601, (sliderBox.x - 201), 98, secondaryColor);
                 } else {
                     if (GuiTextBox((Rectangle){200, 600, 1200, 100}, masterPassword, MAX_PASS, editMode==1)) {
                         editMode = (editMode == 1) ? -1 : 1;
@@ -1716,19 +1735,19 @@ int main(void) {
                 }
                 if (initedNetwork == false || connected == false) {
                     Rectangle networkErrorRec = {1, 900/2-100, 1600, 200};
-                    Color accentColor = {255, 79, 79, 255};
-                    Color backgroundColor = {255, 157, 157, 255};
-                    DrawRectangleRec(networkErrorRec, backgroundColor);
-                    DrawRectangleLinesEx(networkErrorRec, 2, accentColor);
+                    Color accentPlateColor = {255, 79, 79, 255};
+                    Color backgroundPlateColor = {255, 157, 157, 255};
+                    DrawRectangleRec(networkErrorRec, backgroundPlateColor);
+                    DrawRectangleLinesEx(networkErrorRec, 2, accentPlateColor);
                     DrawTextEx(font, "Потеряно соединение с сервером!", (Vector2){1600/2-470, 900/2-20}, 60, 2, RED);
                 }
                 if (serverErrorCode == 1) {
                     if (warningTimer > 1) {
                         Rectangle warningRec = {1352, 16, 232, 40};
-                        Color accentColor = {255, 79, 79, 255};
-                        Color backgroundColor = {255, 157, 157, 255};
-                        DrawRectangleRec(warningRec, backgroundColor);
-                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        Color accentPlateColor = {255, 79, 79, 255};
+                        Color backgroundPlateColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundPlateColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
                         if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
                             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 warningTimer=5000;
@@ -1744,10 +1763,10 @@ int main(void) {
                 } else if (serverErrorCode == 2) {
                     if (warningTimer > 1) {
                         Rectangle warningRec = {1352, 16, 268, 40};
-                        Color accentColor = {255, 79, 79, 255};
-                        Color backgroundColor = {255, 157, 157, 255};
-                        DrawRectangleRec(warningRec, backgroundColor);
-                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        Color accentPlateColor = {255, 79, 79, 255};
+                        Color backgroundPlateColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundPlateColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
                         if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
                             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 warningTimer=5000;
@@ -1778,10 +1797,10 @@ int main(void) {
                 if (GuiTextBox((Rectangle){100, 360, 400, 40}, config.profileDescription, MAX_DESC, activeField==3)) {
                     activeField = (activeField == 3) ? -1 : 3;
                 }
-                DrawTextEx(font,"Юзернейм", (Vector2){520, 160}, 20, 3, LIGHTGRAY);
-                DrawTextEx(font, "Email", (Vector2){520, 230}, 20, 3, LIGHTGRAY);
-                DrawTextEx(font, "Пароль", (Vector2){520, 300}, 20, 3, LIGHTGRAY);
-                DrawTextEx(font, "Описание профиля (опционально)", (Vector2){520, 370}, 20, 3, LIGHTGRAY);
+                DrawTextEx(font,"Юзернейм", (Vector2){520, 160}, 20, 3, mainColor);
+                DrawTextEx(font, "Email", (Vector2){520, 230}, 20, 3, mainColor);
+                DrawTextEx(font, "Пароль", (Vector2){520, 300}, 20, 3, mainColor);
+                DrawTextEx(font, "Описание профиля (опционально)", (Vector2){520, 370}, 20, 3, mainColor);
 
                 if (GuiButton((Rectangle){100, 450, 200, 50}, "Сохранить и продолжить") || IsKeyPressed(KEY_ENTER)) {
                     config.isFirstUsed = false;
@@ -1804,19 +1823,19 @@ int main(void) {
                 }
                 if (initedNetwork == false || connected == false) {
                     Rectangle networkErrorRec = {1, 900/2-100, 1600, 200};
-                    Color accentColor = {255, 79, 79, 255};
-                    Color backgroundColor = {255, 157, 157, 255};
-                    DrawRectangleRec(networkErrorRec, backgroundColor);
-                    DrawRectangleLinesEx(networkErrorRec, 2, accentColor);
+                    Color accentPlateColor = {255, 79, 79, 255};
+                    Color backgroundPlateColor = {255, 157, 157, 255};
+                    DrawRectangleRec(networkErrorRec, backgroundPlateColor);
+                    DrawRectangleLinesEx(networkErrorRec, 2, accentPlateColor);
                     DrawTextEx(font, "Потеряно соединение с сервером!", (Vector2){1600/2-470, 900/2-20}, 60, 2, RED);
                 }
                 if (serverErrorCode == 1) {
                     if (warningTimer > 1) {
                         Rectangle warningRec = {1352, 16, 232, 40};
-                        Color accentColor = {255, 79, 79, 255};
-                        Color backgroundColor = {255, 157, 157, 255};
-                        DrawRectangleRec(warningRec, backgroundColor);
-                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        Color accentPlateColor = {255, 79, 79, 255};
+                        Color backgroundPlateColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundPlateColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
                         if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
                             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 warningTimer=5000;
@@ -1832,10 +1851,10 @@ int main(void) {
                 } else if (serverErrorCode == 2) {
                     if (warningTimer > 1) {
                         Rectangle warningRec = {1352, 16, 268, 40};
-                        Color accentColor = {255, 79, 79, 255};
-                        Color backgroundColor = {255, 157, 157, 255};
-                        DrawRectangleRec(warningRec, backgroundColor);
-                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        Color accentPlateColor = {255, 79, 79, 255};
+                        Color backgroundPlateColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundPlateColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
                         if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
                             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 warningTimer=5000;
@@ -1867,66 +1886,66 @@ int main(void) {
                     loadedAvatar=true;
                 }
 
-                DrawRectangleLines(1, 1, 300, 899, GRAY);
-                DrawRectangleLines(301, 1, 1000, 899, GRAY);
-                DrawRectangleLines(1301, 1, 299, 899, GRAY);
-                DrawLine(1, 40, 1600, 40, GRAY);
-                DrawTextEx(font, "Знакомые", (Vector2){87, 10}, 24, 2, WHITE);
-                DrawTextEx(font, "Чат", (Vector2){760, 10}, 24, 2, WHITE);
-                DrawTextEx(font, "Профиль", (Vector2){1400, 10}, 24, 2, WHITE);
-                DrawLine(1, 80, 1300, 80, GRAY);
+                DrawRectangleLines(1, 1, 300, 899, mainColor);
+                DrawRectangleLines(301, 1, 1000, 899, mainColor);
+                DrawRectangleLines(1301, 1, 299, 899, mainColor);
+                DrawLine(1, 40, 1600, 40, mainColor);
+                DrawTextEx(font, "Знакомые", (Vector2){87, 10}, 24, 2, mainColor);
+                DrawTextEx(font, "Чат", (Vector2){760, 10}, 24, 2, mainColor);
+                DrawTextEx(font, "Профиль", (Vector2){1400, 10}, 24, 2, mainColor);
+                DrawLine(1, 80, 1600, 80, mainColor);
 
-                // Profile section
-                Rectangle avatarRect = {1320, 60, 128, 128};
-                DrawRectangleRec(avatarRect, DARKGRAY);
-                if (userAvatarTexture.id != 0) {
-                    DrawTexturePro(userAvatarTexture,
-                                   (Rectangle){0, 0, 128, 128},
-                                   avatarRect,
-                                   (Vector2){0, 0}, 0.0f, WHITE);
-                } else {
-                    DrawRectangleLinesEx(avatarRect, 4, LIGHTGRAY);
-                    DrawTextEx(font, "нет\nаватарки", (Vector2){1333, 82}, 24, 2, GRAY);
-                }
-                if (CheckCollisionPointRec(GetMousePosition(), avatarRect) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                    fileSelector = true;
-                }
-                DrawTextEx(font, TextFormat("%s", config.userName), (Vector2){1320, 200}, 24, 1.0f, WHITE);
-                Rectangle textBounds = { 1326, 278, 248, 388 };
-                if (GuiTextBox((Rectangle){1320, 270, 260, 400}, newDesc, MAX_DESC, activeField==4)) {
-                    activeField = (activeField == 4) ? -1 : 4;
-                } else {
-                    DrawTextBoxed(font, config.profileDescription, textBounds, 20, 1.0f, WHITE);
-                }
-                GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
-                if (GuiButton((Rectangle){1320, 230, 250, 30}, "скопировать код дружбы")) {
-                    char copyToClipboard[13];
-                    snprintf(copyToClipboard, 12, "%ld", config.userId);
-                    SetClipboardText(copyToClipboard);
-                }
-                GuiSetStyle(DEFAULT, TEXT_SIZE, 24);
-                if (GuiButton((Rectangle){1320, 690, 200, 50}, "Обновить")) {
-                    if (newDesc[0] != 0) {
-                        newDesc[1024]='\0';
-                        strcpy(config.profileDescription, newDesc);
-                        memset(newDesc, 0, sizeof(newDesc));
+                if (currentFriendId!=0) {
+                    if (GuiButton((Rectangle){1310, 45, 30, 30}, "<") && profilePage>1) {
+                        profilePage--;
                     }
-                    SaveEncryptedConfig(&config, masterPassword);
-                }
-                DrawTextEx(font, "Путь к аватарке:", (Vector2){1320, 760}, 20, 2, LIGHTGRAY);
-                if (path2 == NULL && CheckCollisionPointRec(GetMousePosition(), (Rectangle){1320, 790, 260, 40})) {
-                    path2 = malloc(255*sizeof(char));
-                    if (path2 == NULL) {
-                        printf(cRED "[FATAL]" RESET " Failed to allocate memory for self avatar path, exiting.");
-                        exit(6);
+                    if (GuiButton((Rectangle){1550, 45, 30, 30}, ">") && profilePage<3) {
+                        profilePage++;
                     }
-                    memset(path2, 0, sizeof(path2));
                 }
-                if (GuiTextBox((Rectangle){1320, 790, 260, 40}, path2, 255, activeField == 7)) {
-                    activeField = (activeField == 7) ? -1 : 7;
-                }
-                if (GuiButton((Rectangle){1320, 840, 200, 50}, "Загрузить")) {
-                    if (path2 == NULL) {
+                if (profilePage == 1) {
+                    DrawTextEx(font, "Мой профиль", (Vector2){1356, 50}, 24, 2.0f, mainColor);
+                    // Profile section
+                    Rectangle avatarRect = {1320, 90, 128, 128};
+                    DrawRectangleRec(avatarRect, background2Color);
+                    if (userAvatarTexture.id != 0) {
+                        DrawTexturePro(userAvatarTexture,
+                                       (Rectangle){0, 0, 128, 128},
+                                       avatarRect,
+                                       (Vector2){0, 0}, 0.0f, WHITE);
+                    } else {
+                        DrawRectangleLinesEx(avatarRect, 4, background2Color);
+                        DrawTextEx(font, "нет\nаватарки", (Vector2){1333, 102}, 24, 2, secondaryColor);
+                    }
+                    if (CheckCollisionPointRec(GetMousePosition(), avatarRect) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                        fileSelector = true;
+                    }
+                    BeginScissorMode(1460, 100, 120, 36);
+                    DrawTextEx(font, TextFormat("%s", config.userName), (Vector2){1460, 100}, 32, 1.0f, mainColor);
+                    EndScissorMode();
+                    DrawLine(1460, 136, 1580, 136, mainColor);
+                    if (GuiTextBox((Rectangle){1320, 270, 260, 400}, newDesc, MAX_DESC, activeField==4)) {
+                        activeField = (activeField == 4) ? -1 : 4;
+                    } else {
+                        DrawTextBoxed(font, config.profileDescription, (Rectangle){ 1326, 278, 248, 388 }, 20, 1.0f, mainColor);
+                    }
+                    GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
+                    if (GuiButton((Rectangle){1320, 230, 250, 30}, "скопировать код дружбы")) {
+                        char copyToClipboard[13];
+                        snprintf(copyToClipboard, 12, "%ld", config.userId);
+                        SetClipboardText(copyToClipboard);
+                    }
+                    GuiSetStyle(DEFAULT, TEXT_SIZE, 24);
+                    if (GuiButton((Rectangle){1320, 690, 200, 50}, "Обновить")) {
+                        if (newDesc[0] != 0) {
+                            newDesc[1024]='\0';
+                            strcpy(config.profileDescription, newDesc);
+                            memset(newDesc, 0, sizeof(newDesc));
+                        }
+                        SaveEncryptedConfig(&config, masterPassword);
+                    }
+                    DrawTextEx(font, "Путь к аватарке:", (Vector2){1320, 760}, 20, 2, mainColor);
+                    if (path2 == NULL && CheckCollisionPointRec(GetMousePosition(), (Rectangle){1320, 790, 260, 40})) {
                         path2 = malloc(255*sizeof(char));
                         if (path2 == NULL) {
                             printf(cRED "[FATAL]" RESET " Failed to allocate memory for self avatar path, exiting.");
@@ -1934,82 +1953,95 @@ int main(void) {
                         }
                         memset(path2, 0, sizeof(path2));
                     }
-                    if (strlen(path2) > 3) {
-                        Image img = LoadImage(path2);
-
-                        if (img.data != NULL) {
-                            // square 128 by 128
-                            int side = (img.width < img.height) ? img.width : img.height;   // taking smallest side
-
-                            // crop to square
-                            Rectangle cropRect = {
-                                (float)(img.width - side) / 2.0f,      // x
-                                (float)(img.height - side) / 2.0f,     // y
-                                (float)side,                           // width
-                                (float)side                            // height
-                            };
-
-                            ImageCrop(&img, cropRect);
-                            ImageResize(&img, 128, 128);        // resize to 128x128
-
-                            // saving near config file
-                            const char *savePath = TextFormat("avatars/%ld.png", config.userId);
-
-                            // folder is not exist
-                            system("mkdir -p avatars");
-
-                            if (ExportImage(img, savePath)) {
-                                printf("[SAVE SELF AVATAR] Avatar was cropped and saved: %s\n", savePath);
-
-                                // updating config
-                                snprintf(config.avatarUrl, MAX_AVATAR, "avatars/%ld.png", config.userId);
-
-                                // refreshing texture
-                                if (userAvatarTexture.id != 0) UnloadTexture(userAvatarTexture);
-                                userAvatarTexture = LoadTextureFromImage(img);
-
-                                SaveEncryptedConfig(&config, masterPassword);        // save and pull to server
-
-                                FILE *f = fopen(savePath, "rb");
-                                if (f) {
-                                    fseek(f, 0, SEEK_END);
-                                    int fileSize = ftell(f);
-                                    fseek(f, 0, SEEK_SET);
-
-                                    unsigned char *pngData = malloc(fileSize);
-                                    fread(pngData, 1, fileSize, f);
-                                    fclose(f);
-
-                                    char *b64 = Base64Encode(pngData, fileSize);
-                                    free(pngData);
-
-                                    if (b64) {
-                                        char response1[PACKET_SIZE];
-                                        snprintf(response1, sizeof(response1), "saveAvatar/%ld\x1E%s", config.userId, b64);
-                                        sendMessage(response1);
-                                        free(b64);
-                                    }
-                                }
-                            } else {
-                                printf("[SAVE SELF AVATAR] Failed to save avatar\n");
-                            }
-
-                            UnloadImage(img);
-                        } else {
-                            printf("[SAVE SELF AVATAR] Failed to load image: %s\n", path2);
-                        }
+                    if (GuiTextBox((Rectangle){1320, 790, 260, 40}, path2, 255, activeField == 7)) {
+                        activeField = (activeField == 7) ? -1 : 7;
                     }
-                    memset(path2, 0, sizeof(path2));
+                    if (GuiButton((Rectangle){1320, 840, 200, 50}, "Загрузить")) {
+                        if (path2 == NULL) {
+                            path2 = malloc(255*sizeof(char));
+                            if (path2 == NULL) {
+                                printf(cRED "[FATAL]" RESET " Failed to allocate memory for self avatar path, exiting.");
+                                exit(6);
+                            }
+                            memset(path2, 0, sizeof(path2));
+                        }
+                        if (strlen(path2) > 3) {
+                            Image img = LoadImage(path2);
+
+                            if (img.data != NULL) {
+                                // square 128 by 128
+                                int side = (img.width < img.height) ? img.width : img.height;   // taking smallest side
+
+                                // crop to square
+                                Rectangle cropRect = {
+                                    (float)(img.width - side) / 2.0f,      // x
+                                    (float)(img.height - side) / 2.0f,     // y
+                                    (float)side,                           // width
+                                    (float)side                            // height
+                                };
+
+                                ImageCrop(&img, cropRect);
+                                ImageResize(&img, 128, 128);        // resize to 128x128
+
+                                // saving near config file
+                                const char *savePath = TextFormat("avatars/%ld.png", config.userId);
+
+                                // folder is not exist
+                                system("mkdir -p avatars");
+
+                                if (ExportImage(img, savePath)) {
+                                    printf("[SAVE SELF AVATAR] Avatar was cropped and saved: %s\n", savePath);
+
+                                    // updating config
+                                    snprintf(config.avatarUrl, MAX_AVATAR, "avatars/%ld.png", config.userId);
+
+                                    // refreshing texture
+                                    if (userAvatarTexture.id != 0) UnloadTexture(userAvatarTexture);
+                                    userAvatarTexture = LoadTextureFromImage(img);
+
+                                    SaveEncryptedConfig(&config, masterPassword);        // save and pull to server
+
+                                    FILE *f = fopen(savePath, "rb");
+                                    if (f) {
+                                        fseek(f, 0, SEEK_END);
+                                        int fileSize = ftell(f);
+                                        fseek(f, 0, SEEK_SET);
+
+                                        unsigned char *pngData = malloc(fileSize);
+                                        fread(pngData, 1, fileSize, f);
+                                        fclose(f);
+
+                                        char *b64 = Base64Encode(pngData, fileSize);
+                                        free(pngData);
+
+                                        if (b64) {
+                                            char response1[PACKET_SIZE];
+                                            snprintf(response1, sizeof(response1), "saveAvatar/%ld\x1E%s", config.userId, b64);
+                                            sendMessage(response1);
+                                            free(b64);
+                                        }
+                                    }
+                                } else {
+                                    printf("[SAVE SELF AVATAR] Failed to save avatar\n");
+                                }
+
+                                UnloadImage(img);
+                            } else {
+                                printf("[SAVE SELF AVATAR] Failed to load image: %s\n", path2);
+                            }
+                        }
+                        memset(path2, 0, sizeof(path2));
+                    }
                 }
 
                 // Error code show warning sections
                 if (profileUpdateCode == 1) {
                     if (warningTimer > 1) {
                         Rectangle warningRec = {1352, 16, 232, 40};
-                        Color accentColor = {255, 79, 79, 255};
-                        Color backgroundColor = {255, 157, 157, 255};
-                        DrawRectangleRec(warningRec, backgroundColor);
-                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        Color accentPlateColor = {255, 79, 79, 255};
+                        Color backgroundPlateColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundPlateColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
                         if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
                             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 warningTimer=5000;
@@ -2025,10 +2057,10 @@ int main(void) {
                 } else if (profileUpdateCode == 2) {
                     if (warningTimer > 1) {
                         Rectangle warningRec = {1352, 16, 268, 40};
-                        Color accentColor = {255, 79, 79, 255};
-                        Color backgroundColor = {255, 157, 157, 255};
-                        DrawRectangleRec(warningRec, backgroundColor);
-                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        Color accentPlateColor = {255, 79, 79, 255};
+                        Color backgroundPlateColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundPlateColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
                         if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
                             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 warningTimer=5000;
@@ -2046,10 +2078,10 @@ int main(void) {
                 if (serverErrorCode == 1) {
                     if (warningTimer > 1) {
                         Rectangle warningRec = {1352, 16, 232, 40};
-                        Color accentColor = {255, 79, 79, 255};
-                        Color backgroundColor = {255, 157, 157, 255};
-                        DrawRectangleRec(warningRec, backgroundColor);
-                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        Color accentPlateColor = {255, 79, 79, 255};
+                        Color backgroundPlateColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundPlateColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
                         if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
                             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 warningTimer=5000;
@@ -2065,10 +2097,10 @@ int main(void) {
                 } else if (serverErrorCode == 2) {
                     if (warningTimer > 1) {
                         Rectangle warningRec = {1352, 16, 268, 40};
-                        Color accentColor = {255, 79, 79, 255};
-                        Color backgroundColor = {255, 157, 157, 255};
-                        DrawRectangleRec(warningRec, backgroundColor);
-                        DrawRectangleLinesEx(warningRec, 2, accentColor);
+                        Color accentPlateColor = {255, 79, 79, 255};
+                        Color backgroundPlateColor = {255, 157, 157, 255};
+                        DrawRectangleRec(warningRec, backgroundPlateColor);
+                        DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
                         if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
                             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 warningTimer=5000;
@@ -2089,9 +2121,9 @@ int main(void) {
                     isUpdatedFriends = false;
                     float friendStartY = 90.0f;
                     for (int i=0; i<friendsCount && friends[i].userId != 0; i++) {
-                        Rectangle friendRect = { 10, friendStartY, 280, 70 };
+                        Rectangle friendRect = { 6, friendStartY, 280, 70 };
                         if (CheckCollisionPointRec(GetMousePosition(), friendRect) && isAddingFriend==false && fileSelector==false) {
-                            DrawRectangleRec(friendRect, (Color){60, 60, 70, 255});
+                            DrawRectangleRec(friendRect, secondary2Color);
                             if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                                 currentFriendId = friends[i].userId;
                                 friends[i].newMessageCount = 0;
@@ -2101,19 +2133,41 @@ int main(void) {
                                 sendMessage(req);
 
                                 chatAutoScrollAllowed=true;
+
                             }
                         } else {
-                            DrawRectangleRec(friendRect, (Color){50, 50, 60, 255});
+                            DrawRectangleRec(friendRect, plateColor);
                         }
-                        DrawRectangleLinesEx(friendRect, 2, GRAY);
 
                         // friend avatar
-                        Rectangle avatarRect2 = { 20, friendStartY + 8, 54, 54 };
-                        DrawTexturePro(friendAvatarArr[i], (Rectangle){0, 0, 54, 54}, avatarRect2, (Vector2){0, 0}, 0.0f, WHITE);
-                        DrawRectangleLinesEx(avatarRect2, 2, LIGHTGRAY);
+                        Rectangle avatarRect2 = { 12, friendStartY + 8, 56, 56 };
+                        if (friendAvatarArr[i].format != 0) {
+                            DrawTexturePro(friendAvatarArr[i], (Rectangle){0, 0, 128, 128}, avatarRect2, (Vector2){0, 0}, 0.0f, WHITE);
+                        } else {
+                            // 1. Deep glass base
+                            DrawRectangleRec(avatarRect2, (Color){ 15, 15, 18, 240 });
+
+                            // 2. The Rotated Mirror Sheen (Confined strictly to the avatar square)
+                            BeginScissorMode((int)avatarRect2.x, (int)avatarRect2.y, (int)avatarRect2.width, (int)avatarRect2.height);
+
+                            // We draw a thick, semi-transparent white line rotated at -20 degrees
+                            // Placing it slightly offset to catch the top-left section like a mirror reflection
+                            Vector2 startPos = { avatarRect2.x - 10, avatarRect2.y + 10 };
+                            Vector2 endPos   = { avatarRect2.x + 70, avatarRect2.y + 40 };
+                            Color glassGlow  = (Color){ 255, 255, 255, 40 }; // Sharp white glare
+
+                            // Draw a thick angled reflection streak across the glass
+                            DrawLineEx(startPos, endPos, 22.0f, glassGlow);
+
+                            EndScissorMode();
+
+                            // 3. Crisp Glass Border (Crucial at small scales to make it look like a physical object)
+                            Color glassBorder = (Color){ 255, 255, 255, 30 };
+                            DrawRectangleLinesEx(avatarRect2, 1.0f, glassBorder);
+                        }
 
                         // name + description
-                        DrawTextEx(font, friends[i].name, (Vector2){85, friendStartY + 12}, 24, 2, WHITE);
+                        DrawTextEx(font, friends[i].name, (Vector2){76, friendStartY + 12}, 24, 2, mainColor);
 
                         if (friends[i].newMessageCount > 0) {
                             if (friends[i].userId != currentFriendId) {
@@ -2123,7 +2177,7 @@ int main(void) {
                                 Rectangle badgeRect = {240, friendStartY + 12, (float)textW + 12, 24};
 
                                 DrawRectangleRec(badgeRect, RED);
-                                DrawText(badge, (int)badgeRect.x + 6, (int)badgeRect.y + 4, 20, WHITE);
+                                DrawText(badge, (int)badgeRect.x + 6, (int)badgeRect.y + 4, 20, mainColor);
                             }
                             chatAutoScrollAllowed=true;
                         }
@@ -2142,17 +2196,43 @@ int main(void) {
                                 shortDesc[pos] = '\0';
                                 strcat(shortDesc, "...");
                             }
-                            DrawTextEx(font, shortDesc, (Vector2){85, friendStartY + 42}, 18, 2, LIGHTGRAY);
+                            DrawTextEx(font, shortDesc, (Vector2){76, friendStartY + 42}, 18, 2, secondaryColor);
                         }
 
                         friendStartY += 80.0f;
+
+                        // drawing full profile page
+                        if (profilePage == 2 && currentFriendId==friends[i].userId) {
+                            DrawTextEx(font, "Профиль друга", (Vector2){1350, 50}, 24, 2.0f, mainColor);
+                            Rectangle avatarRect = {1320, 90, 128, 128};
+                            DrawRectangleRec(avatarRect, background2Color);
+                            if (friendAvatarArr[i].format != 0) {
+                                DrawTexturePro(friendAvatarArr[i], (Rectangle){0, 0, 128, 128}, avatarRect, (Vector2){0, 0}, 0.0f, WHITE);
+                            } else {
+                                DrawRectangleLinesEx(avatarRect, 4, background2Color);
+                                DrawTextEx(font, "нет\nаватарки", (Vector2){1333, 102}, 24, 2, secondaryColor);
+                            }
+                            BeginScissorMode(1460, 100, 120, 36);
+                            DrawTextEx(font, TextFormat("%s", friends[i].name), (Vector2){1460, 100}, 32, 1.0f, mainColor);
+                            EndScissorMode();
+                            DrawLine(1460, 136, 1580, 136, mainColor);
+                            DrawRectangleLines(1320, 270, 260, 400, plateColor);
+                            DrawTextBoxed(font, friends[i].profileDescription, (Rectangle){ 1326, 278, 248, 388 }, 20, 1.0f, mainColor);
+                            GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
+                            if (GuiButton((Rectangle){1320, 230, 250, 30}, "скопировать код дружбы")) {
+                                char copyToClipboard[13];
+                                snprintf(copyToClipboard, 12, "%ld", friends[i].userId);
+                                SetClipboardText(copyToClipboard);
+                            }
+                            GuiSetStyle(DEFAULT, TEXT_SIZE, 24);
+                        }
                     }
                 } else if (friendsCount == 0) {
                     Vector2 result = MeasureTextEx(font, "--пусто--", 20, 2);
-                    DrawTextEx(font, "--пусто--", (Vector2){(301.0f/2-result.x/2), 40}, 20, 2, LIGHTGRAY);
+                    DrawTextEx(font, "--пусто--", (Vector2){(301.0f/2-result.x/2), 40}, 20, 2, secondaryColor);
                 } else if (friendsCount == -1) {
                     Vector2 result = MeasureTextEx(font, "--ошибка чтения--", 20, 2);
-                    DrawTextEx(font, "--ошибка чтения--", (Vector2){(301.0f/2-result.x/2), 40}, 20, 2, LIGHTGRAY);
+                    DrawTextEx(font, "--ошибка чтения--", (Vector2){(301.0f/2-result.x/2), 40}, 20, 2, secondaryColor);
                 }
 
                 // Update friend avatars section
@@ -2170,7 +2250,7 @@ int main(void) {
                             if (img.data == NULL) {
                                 printf("[LOAD FRIEND AVATAR] Couldnt load %ld's avatar with %s path\n", friends[i].userId, path);
                             } else {
-                                ImageResize(&img, 54, 54);
+                                ImageResize(&img, 128, 128);
                                 friendAvatarArr[i] = LoadTextureFromImage(img);
                                 UnloadImage(img);
                             }
@@ -2245,13 +2325,11 @@ int main(void) {
                             break;
                         }
                     }
-                    DrawTextEx(font, TextFormat("Чат с %s", friendName), (Vector2){330, 50}, 28, 2, WHITE);
-                    GuiButton((Rectangle){1180, 42, 36, 36}, "");
-                    GuiDrawIcon(122, 1183, 44, 2, DARKGRAY);
-                    //DrawRectangleLines(1185, 40, 40, 40, LIGHTGRAY);
-                    GuiButton((Rectangle){1235, 42, 36, 36}, "");
-                    GuiDrawIcon(169, 1238, 44, 2, DARKGRAY);
-                    //DrawRectangleLines(1235, 40, 40, 40, LIGHTGRAY);
+                    DrawTextEx(font, TextFormat("Чат с %s", friendName), (Vector2){321, 48}, 28, 2, mainColor);
+                    GuiButton((Rectangle){1189, 42, 36, 36}, "");
+                    GuiDrawIcon(122, 1192, 44, 2, mainColor);
+                    GuiButton((Rectangle){1243, 42, 36, 36}, "");
+                    GuiDrawIcon(169, 1246, 44, 2, mainColor);
                     // TODO: аудио и видео звонок
                     // TODO: версия 3.0
                 }
@@ -2297,12 +2375,12 @@ int main(void) {
                         };
 
                         if (bubble.y > 80 && bubble.y + (float)bubbleHeight < 840) {
-                            Color bubbleColor = isMine ? (Color){0, 120, 215, 255} : (Color){60, 60, 70, 255};
+                            Color bubbleColor = isMine ? (Color){158, 105, 32, 255} : (Color){70, 70, 60, 255};
 
                             DrawRectangleRec(bubble, bubbleColor);
-                            DrawRectangleLinesEx(bubble, 2, isMine ? SKYBLUE : LIGHTGRAY);
+                            DrawRectangleLinesEx(bubble, 2, secondary2Color);
 
-                            DrawWrappedText(wrapped, (Vector2){bubble.x + 20, bubble.y + 12}, font, 22, 2, WHITE);
+                            DrawWrappedText(wrapped, (Vector2){bubble.x + 20, bubble.y + 12}, font, 22, 2, mainColor);
                         }
 
                         currentY += (float)bubbleHeight + 18;
@@ -2322,7 +2400,7 @@ int main(void) {
 
                         DrawRectangle(chatArea.x + chatArea.width, 100, 10, 680, Fade(BLACK, 0.3f));
 
-                        Color sbColor = chatIsDraggingScrollbar ? WHITE : LIGHTGRAY;
+                        Color sbColor = chatIsDraggingScrollbar ? WHITE : GRAY;
                         DrawRectangleRec(scrollbarRect, Fade(sbColor, 0.85f));
 
                         Vector2 mouse = GetMousePosition();
@@ -2347,19 +2425,20 @@ int main(void) {
                     }
                 } else if (messagesCount == 0 && currentFriendId != 0) {
                     Vector2 result = MeasureTextEx(font, "--пусто--", 32, 2);
-                    DrawTextEx(font, "--пусто--", (Vector2){(1301.0f/2-result.x/2), 600}, 32, 2, LIGHTGRAY);
+                    DrawTextEx(font, "--пусто--", (Vector2){(1001.0f/2-result.x/2)+300, 600}, 32, 2, secondaryColor);
+                    printf("\n\ncalculated value: %f\n\n", (1001.0f/2-result.x/2)+300);
                 } else if (messagesCount == -1) {
                     Vector2 result = MeasureTextEx(font, "--ошибка чтения--", 32, 2);
-                    DrawTextEx(font, "--ошибка чтения--", (Vector2){(1301.0f/2-result.x/2), 600}, 32, 2, LIGHTGRAY);
+                    DrawTextEx(font, "--ошибка чтения--", (Vector2){(1301.0f/2-result.x/2), 600}, 32, 2, secondaryColor);
                 }
 
                 // Adding friend field section
                 if (isAddingFriend == true && fileSelector==false) {
                     if (IsKeyPressed(KEY_ESCAPE)) isAddingFriend=false;
-                    DrawRectangle(1600/2-200, 900/2-200, 400, 400, GRAY);
-                    DrawRectangleLines(1600/2-200, 900/2-200, 400, 400, WHITE);
-                    DrawRectangleLines(1600/2-190, 900/2-140, 381, 61, WHITE);
-                    DrawTextEx(font, "Введи код дружбы:", (Vector2){1600/2-190, 900/2-180}, 20, 2, WHITE);
+                    DrawRectangle(1600/2-200, 900/2-200, 400, 400, secondaryColor);
+                    DrawRectangleLines(1600/2-200, 900/2-200, 400, 400, mainColor);
+                    DrawRectangleLines(1600/2-190, 900/2-140, 381, 61, mainColor);
+                    DrawTextEx(font, "Введи код дружбы:", (Vector2){1600/2-190, 900/2-180}, 20, 2, mainColor);
                     if (GuiTextBox((Rectangle){1600/2-190, 900/2-140, 380, 60}, userId, 14, activeField==6)) {
                         activeField = (activeField == 6) ? -1 : 6;
                     }
@@ -2403,7 +2482,7 @@ int main(void) {
                     float startY = 900/2.0f -70;
                     for (int i=0; i<100 && pendingFriends[i].userId!=0; i++) {
                         Rectangle friendRect = {1600/2-190, startY, 380, 68};
-                        DrawRectangleLines(1600/2-189, startY+1, 378, 66, GRAY);
+                        DrawRectangleLines(1600/2-189, startY+1, 378, 66, secondaryColor);
                         Rectangle avatarRect2 = { 1600/2-184, startY + 8, 54, 54 };
 
                         if (CheckCollisionPointRec(GetMousePosition(), friendRect)) {
@@ -2423,15 +2502,15 @@ int main(void) {
                         } else {
                             DrawRectangleRec(avatarRect2, GRAY);
                         }
-                        DrawRectangleLinesEx(avatarRect2, 2, LIGHTGRAY);
-                        DrawTextEx(font, pendingFriends[i].name, (Vector2){1600/2-190 + 70, startY + 12}, 24, 2, WHITE);
+                        //DrawRectangleLinesEx(avatarRect2, 2, secondaryColor);
+                        DrawTextEx(font, pendingFriends[i].name, (Vector2){1600/2-190 + 70, startY + 12}, 24, 2, mainColor);
 
                         if (strlen(pendingFriends[i].profileDescription) > 0) {
                             char shortDesc[80];
                             strncpy(shortDesc, pendingFriends[i].profileDescription, 70);
                             shortDesc[70] = '\0';
                             if (strlen(pendingFriends[i].profileDescription) > 70) strcat(shortDesc, "...");
-                            DrawTextEx(font, shortDesc, (Vector2){1600/2-190 + 70, startY + 42}, 18, 2, LIGHTGRAY);
+                            DrawTextEx(font, shortDesc, (Vector2){1600/2-190 + 70, startY + 42}, 18, 2, secondaryColor);
                         }
 
                         startY += 80;
@@ -2440,7 +2519,7 @@ int main(void) {
                 if (fileSelector == true && isAddingFriend==false) {
                     if (IsKeyPressed(KEY_ESCAPE)) {fileSelector=false;}
                     Rectangle bounds = {100, 100, 800, 600};
-                    path2 = GuiFileSelector(bounds, "Выбор файла:", font, LIGHTGRAY, GRAY, WHITE);
+                    path2 = GuiFileSelector(bounds, "Выбор файла:", font, mainColor, secondaryColor, mainColor);
                     if (path2!=NULL && strlen(path2)>1) {
                         fileSelector=false;
                         printf("\nend filename: %s", path2);
@@ -2449,10 +2528,10 @@ int main(void) {
 
                 if (initedNetwork == false || connected == false) {
                     Rectangle networkErrorRec = {1, 900/2-100, 1600, 200};
-                    Color accentColor = {255, 79, 79, 255};
-                    Color backgroundColor = {255, 157, 157, 255};
-                    DrawRectangleRec(networkErrorRec, backgroundColor);
-                    DrawRectangleLinesEx(networkErrorRec, 2, accentColor);
+                    Color accentPlateColor = {255, 79, 79, 255};
+                    Color backgroundPlateColor = {255, 157, 157, 255};
+                    DrawRectangleRec(networkErrorRec, backgroundPlateColor);
+                    DrawRectangleLinesEx(networkErrorRec, 2, accentPlateColor);
                     DrawTextEx(font, "Потеряно соединение с сервером!", (Vector2){1600/2-470, 900/2-20}, 60, 2, RED);
                 }
 
