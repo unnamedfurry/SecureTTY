@@ -1,4 +1,4 @@
-# UnChat
+# SecureTTY
 This is yet another chat project made for practide and fun. **Maaaaybeeee** sometimes it will grow to serious, big, enterprise-level project. All you can do now is just use it and report bugs to improve whatever its called. Enjoy :3
 
 ---
@@ -10,23 +10,23 @@ You will need:
 - Root privilegies (strongly recommended for installer)
 
 You should do:
-1. Download server binary to folder (e.g. "unchat") and chmod is (`chmod +x server`)
-2. Create mysql table named `unchat`:
+1. Download server binary to folder (e.g. "securetty") and chmod is (`chmod +x server`)
+2. Create mysql table named `securetty`:
     ```bash
     mysql -u root -p
-    CREATE DATABASE unchat;
+    CREATE DATABASE securetty;
     exit;
     ```
 3. Configure your server network in **server.h**
 4. Run the binary:
     ```bash
-    cd unchat
+    cd securetty
     ./server
     ```
     P.S. its recommended to use screen package to not lose process and its tty console: `sudo apt install screen`, and then run with command:
     ```bach
-    cd unchat
-    screen -s unchat -dm ./server
+    cd securetty
+    screen -s securetty -dm ./server
     ```
 ---
 ### Client setup
