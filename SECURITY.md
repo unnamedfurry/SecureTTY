@@ -1,6 +1,6 @@
 # Security Policy
 
-## Supported Versions
+### Supported Versions
 
 Current **client** supported versions:
 
@@ -16,7 +16,7 @@ Current **server** supported versions:
 | 2.X-B   | :white_check_mark: |
 | 1.0-B   | :x:                |
 
-## ~~Reporting a Vulnerability~~
+### ~~Reporting a Vulnerability~~
 
 // Use this section to tell people how to report a vulnerability.
 
