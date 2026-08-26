@@ -16,6 +16,7 @@
 #include "server.h"
 #include <sodium.h>
 #include <errno.h>
+#include <signal.h>
 
 #define RESET   "\033[0m"
 #define RED     "\033[31m"
@@ -42,6 +43,17 @@ int addrlen = sizeof(address);
 char incomingBuffer[BUFFER_SIZE] = {0};
 char outgoingBuffer[BUFFER_SIZE] = {0};
 static pthread_t thread_id;
+static pthread_attr_t attr;
+#define MAX_CLIENTS 1024
+static volatile sig_atomic_t g_shutdown = 0;
+static int g_server_fd = -1;
+static int g_client_socks[MAX_CLIENTS];
+static int g_client_count = 0;
+static pthread_mutex_t g_clients_lock = PTHREAD_MUTEX_INITIALIZER;
+void handle_signal(int sig) {
+    g_shutdown = 1;
+    shutdown(server_fd, SHUT_RDWR); // будит accept()
+}
 
 #define MAX_NAME 23
 #define MAX_EMAIL 32
@@ -110,16 +122,16 @@ bool EncryptPacket(ClientSession *session, const char* plaintext, char* out_buff
             (const unsigned char*)plaintext, len,
             nullptr, 0, nullptr, nonce, session->serverSessionKey) != 0) {
         return false;
-            }
+    }
 
-    char nonce_b64[128], ct_b64[8192];
+    char nonce_b64[128], ct_b64[PACKET_SIZE/2];
     sodium_bin2base64(nonce_b64, sizeof(nonce_b64), nonce, sizeof(nonce), sodium_base64_VARIANT_ORIGINAL);
     sodium_bin2base64(ct_b64, sizeof(ct_b64), ct, ct_len, sodium_base64_VARIANT_ORIGINAL);
 
     snprintf(out_buffer, max_size, "enc:%s:%s", nonce_b64, ct_b64);
     return true;
 }
-bool sendPacket(int sock, const char *data) {
+bool sendPacket(int sock, const char *data, ClientSession *curr) {
     time_t rawtime;
     struct tm *info;
     char buffer[80];
@@ -129,28 +141,15 @@ bool sendPacket(int sock, const char *data) {
     if (sock <= 0 || data == NULL) return false;
 
     char packet[PACKET_SIZE-1] = {0};
-    ClientSession *session = nullptr;
+    if (!curr) return false;
 
-    pthread_mutex_lock(&clientsMutex);
-    ClientSession *curr = activeClients;
-    while (curr) {
-        if (curr->sock == sock) {
-            session = curr;
-            break;
-        }
-        curr = curr->next;
-    }
-    pthread_mutex_unlock(&clientsMutex);
-
-    if (!session) return false;
-
-    if (!EncryptPacket(session, data, packet, sizeof(packet)-1)) {
+    if (!EncryptPacket(curr, data, packet, sizeof(packet)-1)) {
         printf("[%s][SEND] Encryption failed\n", buffer);
         return false;
     }
 
     packet[strlen(packet)]='\n';
-    int sent = send(sock, packet, strlen(packet), MSG_NOSIGNAL);
+    int sent = (int)send(sock, packet, strlen(packet), MSG_NOSIGNAL);
     if (sent < 0) {
         if (errno == EPIPE || errno == ECONNRESET) {
             printf("[%s][SEND] Client disconnected (sock=%d)\n", buffer, sock);
@@ -161,11 +160,16 @@ bool sendPacket(int sock, const char *data) {
     }
 
     printf("[%s][SEND] Sent successfully: %s (sock=%d)\n", buffer, packet, sock);
-
     return true;
 }
-// register client (after authorization)
+// register client (before authorization)
 void registerClient(long userId, int sock) {
+    pthread_mutex_lock(&g_clients_lock);
+    if (g_client_count < MAX_CLIENTS) {
+        g_client_socks[g_client_count++] = sock;
+    }
+    pthread_mutex_unlock(&g_clients_lock);
+
     time_t rawtime;
     struct tm *info;
     char buffer[80];
@@ -204,62 +208,56 @@ void registerClient(long userId, int sock) {
 }
 
 // remove client after disconnecting
-void unregisterClient(int sock) {
-    pthread_mutex_lock(&clientsMutex);
-    ClientSession *curr = activeClients, *prev = nullptr;
-
-    while (curr) {
-        if (curr->sock == sock) {
-            time_t rawtime;
-            struct tm *info;
-            char buffer[80];
-            time(&rawtime);
-            info = localtime(&rawtime);
-            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-            printf("[%s][NETWORK] client disconnected: userId=%ld\n", buffer, curr->userId);
-            if (prev) prev->next = curr->next;
-            else activeClients = curr->next;
-            free(curr);
+void unregisterClient(ClientSession *curr) {
+    pthread_mutex_lock(&g_clients_lock);
+    for (int i = 0; i < g_client_count; i++) {
+        if (g_client_socks[i] == curr->sock) {
+            g_client_socks[i] = g_client_socks[--g_client_count];
             break;
         }
-        prev = curr;
-        curr = curr->next;
     }
-    pthread_mutex_unlock(&clientsMutex);
-}
+    pthread_mutex_unlock(&g_clients_lock);
 
-// sending messages to online client
-bool pushToUser(long userId, const char *data) {
     time_t rawtime;
     struct tm *info;
     char buffer[80];
     time(&rawtime);
     info = localtime(&rawtime);
     strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+
     pthread_mutex_lock(&clientsMutex);
-
-    ClientSession *curr = activeClients;
-    while (curr) {
-        if (curr->userId == userId) {
-            int sock = curr->sock;
-            pthread_mutex_unlock(&clientsMutex);   // releasing mutex before send
-
-            bool ok = sendPacket(sock, data);
-
-            if (!ok) {
-                printf("[%s][PUSH] Failed to send to user %ld (sock=%d). Will be cleaned on next read.\n", buffer, userId, sock);
-            }
-            return ok;
+    ClientSession *c = activeClients, *prev = nullptr;
+    while (c) {
+        if (c == curr) {
+            if (prev) prev->next = c->next; else activeClients = c->next;
+            break;
         }
-        curr = curr->next;
+        prev = c; c = c->next;
     }
-
-    printf("[%s][PUSH] User %ld offline\n", buffer, userId);
     pthread_mutex_unlock(&clientsMutex);
-    return false;
+
+    printf("[%s][NETWORK] client disconnected: userId=%ld\n", buffer, curr->userId);
 }
 
-void getClientUpdates(long userId, int sock) {
+// sending messages to online client
+bool pushToUser(long userId, const char *data, ClientSession *curr) {
+    time_t rawtime;
+    struct tm *info;
+    char buffer[80];
+    time(&rawtime);
+    info = localtime(&rawtime);
+    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+
+    int sock = curr->sock;
+    bool ok = sendPacket(sock, data, curr);
+
+    if (!ok) {
+        printf("[%s][PUSH] Failed to send to user %ld (sock=%d). Will be cleaned on next read.\n", buffer, userId, sock);
+    }
+    return ok;
+}
+
+void getClientUpdates(long userId, int sock, ClientSession *curr) {
     time_t rawtime;
     struct tm *info;
     char buffer[80];
@@ -268,11 +266,11 @@ void getClientUpdates(long userId, int sock) {
     strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
     { // MESSAGES
         int size = sizeof(char)*1050;
-        char *response = malloc(size);
+        char *response = malloc(size * sizeof(char));
         if (response == NULL) {
             printf("[%s][FATAL | CLIENT UPDATES] Not enough memory for updateClient answer", buffer);
             snprintf(response, 29, "updateClient/messages/error");
-            sendPacket(sock, response);
+            sendPacket(sock, response, curr);
             free(response);
             pthread_mutex_unlock(&mysql_mutex);
             return;
@@ -280,7 +278,7 @@ void getClientUpdates(long userId, int sock) {
         int offset = 0;
         offset += snprintf(response+offset, size-offset, "updateClient/messages/");
 
-        char query[512];
+        char query[512] = {0};
         snprintf(query, sizeof(query),
                 "SELECT senderId, COUNT(*) as cnt "
                       "FROM messages "
@@ -309,18 +307,18 @@ void getClientUpdates(long userId, int sock) {
             offset += snprintf(response+offset, size-offset, "0\x1E");
         }
         pthread_mutex_unlock(&mysql_mutex);
-        sendPacket(sock, response);
+        sendPacket(sock, response, curr);
         printf("[%s][GET CLIENT UPDATES] Sent messages update for %ld: %s\n", buffer, userId, response);
         free(response);
     }
 
     { // FRIEND REQUESTS
         int size = sizeof(char)*1024;
-        char *response = malloc(size);
+        char *response = malloc(size * sizeof(char));
         if (response == NULL) {
             printf("[%s][FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n", buffer);
             snprintf(response, 35, "updateClient/friendRequests/error");
-            sendPacket(sock, response);
+            sendPacket(sock, response, curr);
             free(response);
             pthread_mutex_unlock(&mysql_mutex);
             return;
@@ -328,7 +326,7 @@ void getClientUpdates(long userId, int sock) {
         int offset = 0;
         offset += snprintf(response+offset, size-offset, "updateClient/friendRequests\x1E");
 
-        char query[512];
+        char query[512] = {0};
         snprintf(query, sizeof(query),
             "SELECT u.userId, u.username, u.profileDesc "
                   "FROM users u "
@@ -371,13 +369,13 @@ void getClientUpdates(long userId, int sock) {
             offset += snprintf(response+offset, size-offset, "0\x1E");
         }
         pthread_mutex_unlock(&mysql_mutex);
-        sendPacket(sock, response);
+        sendPacket(sock, response, curr);
         printf("[%s][GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", buffer, userId, response);
         free(response);
     }
 }
 
-void getChatHistory(long userId, long friendId, int sock) {
+void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
     time_t rawtime;
     struct tm *info;
     char buffer[80];
@@ -386,14 +384,13 @@ void getChatHistory(long userId, long friendId, int sock) {
     strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
 
     int bufSize = BUFFER_SIZE;
-    char *response = malloc(bufSize);
+    char *response = malloc(bufSize * sizeof(char));
     memset(response, 0, bufSize);
     if (!response) {
         printf("[%s][FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n", buffer);
         snprintf(response, 23, "getChatHistory/error");
-        sendPacket(sock, response);
+        sendPacket(sock, response, curr);
         free(response);
-        pthread_mutex_unlock(&mysql_mutex);
         return;
     }
     int offset = snprintf(response, bufSize, "getChatHistory/%ld\x1E", friendId);
@@ -410,7 +407,7 @@ void getChatHistory(long userId, long friendId, int sock) {
     pthread_mutex_lock(&mysql_mutex);
     if (mysql_query(conn, query)) {
         snprintf(response, 23, "getChatHistory/error");
-        sendPacket(sock, response);
+        sendPacket(sock, response, curr);
         free(response);
         pthread_mutex_unlock(&mysql_mutex);
         return;
@@ -419,7 +416,7 @@ void getChatHistory(long userId, long friendId, int sock) {
     MYSQL_RES *res = mysql_store_result(conn);
     if (!res) {
         snprintf(response, 23, "getChatHistory/empty\x1E%ld", friendId);
-        sendPacket(sock, response);
+        sendPacket(sock, response, curr);
         free(response);
         pthread_mutex_unlock(&mysql_mutex);
         return;
@@ -431,9 +428,13 @@ void getChatHistory(long userId, long friendId, int sock) {
             bufSize+=BUFFER_SIZE;
             char *newResponse = realloc(response, bufSize);
             if (!newResponse) {
-                printf("[%s][FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n", buffer); free(response); return;
+                printf(RED "[%s][FATAL | GET CHAT HISTORY]" RESET " Not enough memory for getChatHistory answer\n", buffer);
+                free(newResponse);
+                free(response);
+                return;
             }
             response = newResponse;
+            free(newResponse);
         }
         long msgId = strtol(row[0], nullptr, 10);
         long sender = strtol(row[1], nullptr, 10);
@@ -448,11 +449,11 @@ void getChatHistory(long userId, long friendId, int sock) {
     pthread_mutex_unlock(&mysql_mutex);
 
     if (offset > 32) {
-        sendPacket(sock, response);
+        sendPacket(sock, response, curr);
         printf("[%s][GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", buffer, strlen(response), userId, friendId);
     } else {
         snprintf(response, 23, "getChatHistory/empty\x1E%ld", friendId);
-        sendPacket(sock, response);
+        sendPacket(sock, response, curr);
     }
     free(response);
 }
@@ -546,7 +547,7 @@ bool saveMessageToDB(long messageId, long senderId, long receiverId, const char 
 
 char* getUserFromDB(long userId) {
     char query[64] = {0};
-    char *response = malloc(sizeof(char)*1960);
+    char *response = malloc(1960 * sizeof(char));
     sprintf(query, "SELECT avatarUrl, profileDesc FROM users WHERE userId = %ld", userId);
     if (mysql_query(conn, query)) {
         printf("[GET USER FROM DB] SELECT err: %s\n", mysql_error(conn));
@@ -562,7 +563,7 @@ char* getUserFromDB(long userId) {
         //int num_fields = (int)mysql_num_fields(res); // number of columns
 
         while ((row = mysql_fetch_row(res))) {
-            snprintf(response, strlen(response), "%s\x1E%s", row[0], row[1]);
+            snprintf(response, PACKET_SIZE, "%s\x1E%s", row[0], row[1]);
             break;
         }
 
@@ -651,6 +652,7 @@ bool sendFriendRequest(long senderId, long receiverId) {
     }
 
     // sending new request
+    // TODO: создать зеркальную запись
     snprintf(query, sizeof(query),
         "INSERT INTO friend_requests (senderId, receiverId, status) "
         "VALUES (%ld, %ld, 'pending') "
@@ -743,7 +745,7 @@ char* Base64Encode(const unsigned char* input, int length) {
     BIO_get_mem_ptr(bio, &bufferPtr);
     BIO_set_close(bio, BIO_NOCLOSE);
 
-    char* output = (char*)malloc(bufferPtr->length + 1);
+    char* output = (char*)malloc(bufferPtr->length + 1 * sizeof(char));
     memcpy(output, bufferPtr->data, bufferPtr->length);
     output[bufferPtr->length] = '\0';
 
@@ -752,9 +754,9 @@ char* Base64Encode(const unsigned char* input, int length) {
 }
 unsigned char* Base64Decode(const char* input, int* out_len) {
     BIO *bio, *b64;
-    int input_len = strlen(input);
+    int input_len = (int)strlen(input);
 
-    unsigned char* output = (unsigned char*)malloc(input_len * 3 / 4 + 1);
+    unsigned char* output = (unsigned char*)malloc(input_len * 3 / 4 + 1 * sizeof(unsigned char));
     if (!output) return nullptr;
 
     b64 = BIO_new(BIO_f_base64());
@@ -775,7 +777,7 @@ unsigned char* Base64Decode(const char* input, int* out_len) {
 
 bool finishedResponse = false;
 // Decrypting received packet
-bool DecryptPacket(ClientSession *session, const char* input, char* out_plain, size_t max_size) {
+bool DecryptPacket(unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES], const char* input, char* out_plain, size_t max_size) {
     if (strncmp(input, "enc:", 4) != 0) {
         strncpy(out_plain, input, max_size - 1);
         out_plain[max_size - 1] = '\0';
@@ -788,7 +790,7 @@ bool DecryptPacket(ClientSession *session, const char* input, char* out_plain, s
     if (!nonce_b64 || !ct_b64) return false;
 
     unsigned char nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES];
-    unsigned char ct[PACKET_SIZE];
+    unsigned char ct[PACKET_SIZE/2];
     size_t nlen = 0, clen = 0;
 
     sodium_base642bin(nonce, sizeof(nonce), nonce_b64, strlen(nonce_b64), nullptr, &nlen, nullptr, sodium_base64_VARIANT_ORIGINAL);
@@ -798,9 +800,9 @@ bool DecryptPacket(ClientSession *session, const char* input, char* out_plain, s
     unsigned long long decrypted_len;
 
     if (crypto_aead_xchacha20poly1305_ietf_decrypt(decrypted, &decrypted_len, nullptr,
-            ct, clen, nullptr, 0, nonce, session->serverSessionKey) != 0) {
+            ct, clen, nullptr, 0, nonce, serverSessionKey) != 0) {
         return false;
-            }
+    }
 
     strncpy(out_plain, (char*)decrypted, max_size - 1);
     out_plain[max_size - 1] = '\0';
@@ -815,6 +817,7 @@ void* acceptMessage(void *arg) {
     char fullMessage[PACKET_SIZE] = {0}; // working copy of a SINGLE message — it is safe to perform decrypt and strtok on it
     int totalReceived = 0;
     pthread_t id = pthread_self();
+    ClientSession *curr = nullptr;
 
     while (1) {
         memset(localBuf, 0, sizeof(localBuf));
@@ -853,7 +856,19 @@ void* acceptMessage(void *arg) {
             memcpy(fullMessage, recvBuf, msgLen);
             fullMessage[msgLen] = '\0';
             finishedResponse = false;
-            ClientSession *curr = nullptr;
+            unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+            {
+                pthread_mutex_lock(&clientsMutex);
+                ClientSession *curr2 = activeClients;
+                while (curr2) {
+                    if (curr2->sock == sock) {
+                        curr = curr2;
+                        memcpy(serverSessionKey, curr2->serverSessionKey, sizeof(curr2->serverSessionKey));
+                    }
+                    curr2 = curr2->next;
+                }
+                pthread_mutex_unlock(&clientsMutex);
+            }
             printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Client said (full message, %zu bytes): %s\n", buffer, id, msgLen, fullMessage);
 
             if (strncmp(fullMessage, "keyexchange/", 12) == 0) {
@@ -874,19 +889,18 @@ void* acceptMessage(void *arg) {
                 unsigned char serverPub[crypto_box_PUBLICKEYBYTES] = {0};
                 unsigned char serverPriv[crypto_box_SECRETKEYBYTES] = {0};
                 crypto_box_keypair(serverPub, serverPriv);
-                ClientSession *target = curr; // early found by sock, could be NULL
-                if (!target) {
-                    target = malloc(sizeof(ClientSession));
-                    target->userId = 0;               // not authenticated yet
-                    target->sock = sock;
-                    target->hasSessionKey = false;
-                    target->loggedIn = false;
-                    target->next = activeClients;
-                    activeClients = target;
+                if (!curr) {
+                    curr = malloc(sizeof(ClientSession));
+                    curr->userId = 0;               // not authenticated yet
+                    curr->sock = sock;
+                    curr->hasSessionKey = false;
+                    curr->loggedIn = false;
+                    curr->next = activeClients;
+                    activeClients = curr;
                 }
 
-                if (crypto_box_beforenm(target->serverSessionKey, clientPubKey, serverPriv) == 0) {
-                    printf("[CRYPTO] Server session key: %p\n", (void*)target->serverSessionKey);
+                if (crypto_box_beforenm(curr->serverSessionKey, clientPubKey, serverPriv) == 0) {
+                    printf("[CRYPTO] Server session key: %p\n", (void*)curr->serverSessionKey);
                     char pub_b64[128] = {0};
                     sodium_bin2base64(pub_b64, sizeof(pub_b64), serverPub, sizeof(serverPub), sodium_base64_VARIANT_ORIGINAL);
                     snprintf(response, sizeof(response), "keyexchange/myturn/%s", pub_b64);
@@ -897,32 +911,16 @@ void* acceptMessage(void *arg) {
             }
 
             char decrypted[PACKET_SIZE] = {0};
-            int status = pthread_mutex_trylock(&clientsMutex);
-            if (status == 0) {
-                curr = activeClients;
-                while (curr) {
-                    if (curr->sock == sock) {
-                        if (DecryptPacket(curr, fullMessage, decrypted, sizeof(decrypted))) {
-                            // fullMessage is already an isolated copy of a single message
-                            // (we leave recvBuf and the queue of remaining messages untouched),
-                            // so we simply copy the decrypted text without using strncpy —
-                            // that would unnecessarily zero out PACKET_SIZE bytes for every message
-                            size_t dlen = strlen(decrypted);
-                            if (dlen >= sizeof(fullMessage)) dlen = sizeof(fullMessage) - 1;
-                            memcpy(fullMessage, decrypted, dlen);
-                            fullMessage[dlen] = '\0';
-                            curr->hasSessionKey=true;
-                            break;
-                        }
-                        break;
-                    }
-                    curr = curr->next;
-                }
-                pthread_mutex_unlock(&clientsMutex);
-            } else if (status == EBUSY) {
-                snprintf(response, sizeof(response), "error/lockedThread");
-            } else {
-                snprintf(response, sizeof(response), "error/unknownIssue");
+            if (DecryptPacket(serverSessionKey, fullMessage, decrypted, sizeof(decrypted))) {
+                // fullMessage is already an isolated copy of a single message
+                // (we leave recvBuf and the queue of remaining messages untouched),
+                // so we simply copy the decrypted text without using strncpy —
+                // that would unnecessarily zero out PACKET_SIZE bytes for every message
+                size_t dlen = strlen(decrypted);
+                if (dlen >= sizeof(fullMessage)) dlen = sizeof(fullMessage) - 1;
+                memcpy(fullMessage, decrypted, dlen);
+                fullMessage[dlen] = '\0';
+                curr->hasSessionKey=true;
             }
 
             if (strcmp(fullMessage, "test/") == 0) {
@@ -946,7 +944,7 @@ void* acceptMessage(void *arg) {
                     char pushPacket[BUFFER_SIZE];
                     snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s\n", messageId, senderId, parts[3], "now");
 
-                    if (!pushToUser(receiverId, pushPacket)) {
+                    if (!pushToUser(receiverId, pushPacket, curr)) {
                         printf("[%s][RECEIVE MESSAGE] Receiver %ld is offline, message will be saved to DB\n", buffer, receiverId);
                     }
                 } else {
@@ -955,39 +953,26 @@ void* acceptMessage(void *arg) {
                 }
             }
             else if (strncmp(fullMessage, "createId/user", 13) == 0) {
-                srand(time(NULL) ^ clock());
+                srand(time(nullptr) ^ clock());
                 // generating 10-digit number from 1000000000 to 9999999999
                 long userId = 1000000000L + (rand() % 9000000000L);
                 sprintf(response, "createId/user/%ld", userId);
                 printf("[%s][CREATE USER ID] New Id generated for user: %ld\n", buffer, userId);
             }
             else if (strncmp(fullMessage, "createId/message", 16) == 0) {
-                srand(time(NULL) ^ clock());
+                srand(time(nullptr) ^ clock());
                 // generating 10-digit number from 1000000000 to 9999999999
                 long userId = 1000000000L + (rand() % 9000000000L);
                 sprintf(response, "createId/message/%ld", userId);
                 printf("[%s][CREATE MESSAGE ID] New Id generated for message: %ld\n", buffer, userId);
             }
             else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
-                pthread_mutex_lock(&clientsMutex);
-                ClientSession *curr2 = activeClients;
-                if (!curr2) {
-                    pthread_mutex_unlock(&clientsMutex);
+                if (curr->hasSessionKey==false) {
+                    printf(RED "[%s][SAVE PROFILE]" RESET " %d attempted unsecured save profile access\n", buffer, sock);
                     goto onfail;
                 }
-                while (curr2) {
-                    if (curr2->sock == sock) {
-                        if (curr2->hasSessionKey==false) {
-                            printf(RED "[%s][SAVE PROFILE]" RESET " %d attempted unsecured save profile access\n", buffer, sock);
-                            pthread_mutex_unlock(&clientsMutex);
-                            goto onfail;
-                        }
-                    }
-                    curr2 = curr2->next;
-                }
-                pthread_mutex_unlock(&clientsMutex);
-                char *badprofile = malloc(128*sizeof(char));
-                memset(badprofile, 0, 128*sizeof(char));
+                char *badprofile = malloc(128 * sizeof(char));
+                memset(badprofile, 0, 128);
                 strncpy(badprofile, fullMessage+13, strlen(fullMessage+13));
                 char *parts[6] = {0};
                 int count = 0;
@@ -1018,74 +1003,38 @@ void* acceptMessage(void *arg) {
             }
 
             else if (strncmp(fullMessage, "getFriendsList/", 15) == 0) {
-                pthread_mutex_lock(&clientsMutex);
-                ClientSession *curr2 = activeClients;
-                if (!curr2) {
-                    pthread_mutex_unlock(&clientsMutex);
+                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                    printf(RED "[%s][GET FRIENDS LIST]" RESET " %d attempted unauthorized friend list access\n", buffer, sock);
                     goto onfail;
                 }
-                while (curr2) {
-                    if (curr2->sock == sock) {
-                        if (curr2->loggedIn==false || curr2->hasSessionKey==false) {
-                            printf(RED "[%s][GET FRIENDS LIST]" RESET " %d attempted unauthorized friend list access\n", buffer, sock);
-                            pthread_mutex_unlock(&clientsMutex);
-                            goto onfail;
-                        }
-                    }
-                    curr2 = curr2->next;
-                }
-                pthread_mutex_unlock(&clientsMutex);
                 long userId = strtol(fullMessage + 15, nullptr, 10);
                 if (userId <= 0) goto onfail;
                 int offset = snprintf(response, sizeof(response), "getFriendsList/");
 
                 // getting relatedUserId
-                char query[512];
+                char query[1024];
                 snprintf(query, sizeof(query),
-                         "SELECT receiverId FROM friend_requests WHERE senderId = %ld AND status = 'accepted'", userId);
+                         "SELECT u.username, u.userId, u.avatarUrl, u.profileDesc "
+                         "FROM users u "
+                         "INNER JOIN friend_requests fr ON u.userId = fr.receiverId "
+                         "WHERE fr.senderId = %ld AND fr.status = 'accepted'", userId);
 
                 pthread_mutex_lock(&mysql_mutex);
-                if (mysql_query(conn, query)) {
-                    printf("[%s][GET FRIEND LIST] Failed to query friends for user %ld: %s\n", buffer, userId, mysql_error(conn));
-                    snprintf(response, sizeof(response), "getFriendList/error");
-                    goto onfail;
-                }
-
-                MYSQL_RES *res = mysql_store_result(conn);
-                if (res == NULL) {
-                    snprintf(response, sizeof(response), "getFriendList/empty");
-                    goto onfail;
-                }
-
-                MYSQL_ROW row;
-                while ((row = mysql_fetch_row(res))) {
-                    if (row[0] == NULL) continue;
-
-                    long friend_id = strtol(row[0], nullptr, 10);
-                    if (friend_id <= 0) continue;
-
-                    // requesting data
-                    snprintf(query, sizeof(query),
-                             "SELECT username, avatarUrl, profileDesc "
-                             "FROM users WHERE userId = %ld", friend_id);
-
-                    if (mysql_query(conn, query) == 0) {
-                        MYSQL_RES *fres = mysql_store_result(conn);
-                        if (fres) {
-                            MYSQL_ROW frow = mysql_fetch_row(fres);
-                            if (frow && frow[0]) {
-                                offset += snprintf(response + offset, sizeof(response) - offset,
-                                    "%s\x1F%ld\x1F%s\x1F%s\x1E",
-                                    frow[0],                    // username
-                                    friend_id,
-                                    frow[1] ? frow[1] : "",     // avatarUrl
-                                    frow[2] ? frow[2] : "");    // profileDesc
-                            }
-                            mysql_free_result(fres);
+                if (mysql_query(conn, query) == 0) {
+                    MYSQL_RES *res = mysql_store_result(conn);
+                    if (res) {
+                        MYSQL_ROW row;
+                        while ((row = mysql_fetch_row(res))) {
+                            offset += snprintf(response + offset, sizeof(response) - offset,
+                                "%s\x1F%ld\x1F%s\x1F%s\x1E",
+                                row[0],                             // username
+                                strtol(row[1], nullptr, 10),        // friend_id
+                                row[2] ? row[2] : "",               // avatarUrl
+                                row[3] ? row[3] : "");              // profileDesc
                         }
+                        mysql_free_result(res);
                     }
                 }
-                mysql_free_result(res);
                 pthread_mutex_unlock(&mysql_mutex);
 
                 // sending result
@@ -1096,23 +1045,10 @@ void* acceptMessage(void *arg) {
                 }
             }
             else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
-                pthread_mutex_lock(&clientsMutex);
-                ClientSession *curr2 = activeClients;
-                if (!curr2) {
-                    pthread_mutex_unlock(&clientsMutex);
+                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                    printf(RED "[%s][ADD FRIEND]" RESET " %d attempted unauthorized friend addition\n", buffer, sock);
                     goto onfail;
                 }
-                while (curr2) {
-                    if (curr2->sock == sock) {
-                        if (curr2->loggedIn==false || curr2->hasSessionKey==false) {
-                            printf(RED "[%s][ADD FRIEND]" RESET " %d attempted unauthorized friend addition\n", buffer, sock);
-                            pthread_mutex_unlock(&clientsMutex);
-                            goto onfail;
-                        }
-                    }
-                    curr2 = curr2->next;
-                }
-                pthread_mutex_unlock(&clientsMutex);
                 char *parts[2] = {0};
                 int count = 0;
                 char *token = strtok(fullMessage + 10, "\x1E");
@@ -1127,7 +1063,7 @@ void* acceptMessage(void *arg) {
                     printf("[%s][ADD FRIEND] received for %ld -> %ld\n", buffer, senderId, receiverId);
                     if (senderId > 0 && receiverId > 0) {
                         if (sendFriendRequest(senderId, receiverId)) {
-                            pushToUser(receiverId, "requestPendingFriends/");
+                            pushToUser(receiverId, "requestPendingFriends/", curr);
                             printf("[%s][ADD FRIEND] Sent successfully %ld -> %ld\n", buffer, senderId, receiverId);
                         } else {
                             printf("[%s][ADD FRIEND] Failed to save request\n", buffer);
@@ -1157,8 +1093,8 @@ void* acceptMessage(void *arg) {
 
                     if (acceptFriendRequest(receiverId, senderId)) {
                         // updating both clients
-                        pushToUser(senderId, "requestFriendUpdate/");
-                        pushToUser(receiverId, "requestFriendUpdate/");
+                        pushToUser(senderId, "requestFriendUpdate/", curr);
+                        pushToUser(receiverId, "requestFriendUpdate/", curr);
                     } else {
                         snprintf(response, sizeof(response), "acceptFriend/error");
                     }
@@ -1167,27 +1103,14 @@ void* acceptMessage(void *arg) {
                 }
             }
             else if (strncmp(fullMessage, "updateClient/", 13) == 0) {
-                pthread_mutex_lock(&clientsMutex);
-                ClientSession *curr2 = activeClients;
-                if (!curr2) {
-                    pthread_mutex_unlock(&clientsMutex);
+                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                    printf(RED "[%s][UPDATE CLIENT]" RESET " %d attempted unauthorized client update access\n", buffer, sock);
                     goto onfail;
                 }
-                while (curr2) {
-                    if (curr2->sock == sock) {
-                        if (curr2->loggedIn==false || curr2->hasSessionKey==false) {
-                            printf(RED "[%s][UPDATE CLIENT]" RESET " %d attempted unauthorized client update access\n", buffer, sock);
-                            pthread_mutex_unlock(&clientsMutex);
-                            goto onfail;
-                        }
-                    }
-                    curr2 = curr2->next;
-                }
-                pthread_mutex_unlock(&clientsMutex);
                 long userId = strtol(fullMessage + 13, nullptr, 10);
                 printf("[%s][UPDATE CLIENT] Received for client/user %ld\n", buffer, userId);
                 if (userId > 0) {
-                    getClientUpdates(userId, sock);
+                    getClientUpdates(userId, sock, curr);
                 }
             }
             else if (strncmp(fullMessage, "registerClient/", 15) == 0) {
@@ -1217,23 +1140,24 @@ void* acceptMessage(void *arg) {
                 char query[256];
                 snprintf(query, 256, "SELECT passwordHash FROM users WHERE userId = %ld AND email = '%s' LIMIT 1", userId, esc_email);
                 if (mysql_query(conn, query)) {
-                    printf("[LOGIN CLIENT] Query Error: %s\n", mysql_error(conn));
+                    printf("[%s][LOGIN CLIENT] Query Error: %s\n", buffer, mysql_error(conn));
                     pthread_mutex_unlock(&mysql_mutex);
-                    unregisterClient(sock);
+                    unregisterClient(curr);
                     close(sock);
                 }
                 MYSQL_RES *result = mysql_store_result(conn);
                 if (result == NULL) {
                     mysql_free_result(result);
                     pthread_mutex_unlock(&mysql_mutex);
-                    unregisterClient(sock);
+                    unregisterClient(curr);
                     close(sock);
                 }
                 MYSQL_ROW row = mysql_fetch_row(result);
                 if (row != NULL && row[0] != NULL) {
                     strncpy(password, row[0], sizeof(password) - 1);
                 } else {
-                    printf("[LOGIN CLIENT] No matching user found.\n");
+                    printf("[%s][LOGIN CLIENT] No matching user found.\n", buffer);
+                    unregisterClient(curr);
                     close(sock);
                 }
                 mysql_free_result(result);
@@ -1244,40 +1168,19 @@ void* acceptMessage(void *arg) {
                 printf("[%s][LOGIN CLIENT] Received for client/user %ld\n", buffer, userId);
                 if (userId > 0 && ok == true) {
                     registerClient(userId, sock);
-                    pthread_mutex_lock(&clientsMutex);
-                    ClientSession *curr2 = activeClients;
-                    while (curr2) {
-                        if (curr2->sock == sock) {
-                            curr2->loggedIn=true;
-                            printf("[%s][LOGIN CLIENT] User %ld\n authorized successfully\n", buffer, userId);
-                        }
-                        curr2 = curr2->next;
-                    }
-                    pthread_mutex_unlock(&clientsMutex);
+                    curr->loggedIn=true;
+                    printf("[%s][LOGIN CLIENT] User %ld\n authorized successfully\n", buffer, userId);
                 } else {
                     printf("[%s][LOGIN CLIENT] User %ld\n failed to authorize: incorrect data\n", buffer, userId);
-                    unregisterClient(sock);
+                    unregisterClient(curr);
                     close(sock);
                 }
             }
             else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
-                pthread_mutex_lock(&clientsMutex);
-                ClientSession *curr2 = activeClients;
-                if (!curr2) {
-                    pthread_mutex_unlock(&clientsMutex);
+                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                    printf(RED "[%s][GET CHAT HISTORY]" RESET " %d attempted unauthorized chat history access\n", buffer, sock);
                     goto onfail;
                 }
-                while (curr2) {
-                    if (curr2->sock == sock) {
-                        if (curr2->loggedIn==false || curr2->hasSessionKey==false) {
-                            printf(RED "[%s][GET CHAT HISTORY]" RESET " %d attempted unauthorized chat history access\n", buffer, sock);
-                            pthread_mutex_unlock(&clientsMutex);
-                            goto onfail;
-                        }
-                    }
-                    curr2 = curr2->next;
-                }
-                pthread_mutex_unlock(&clientsMutex);
                 char *parts[2] = {0};
                 int count = 0;
                 char *token = strtok(fullMessage + 15, "\x1E");
@@ -1292,28 +1195,15 @@ void* acceptMessage(void *arg) {
                     printf("[%s][GET CHAT HISTORY] Received history request from %ld with %ld\n", buffer, userId, friendId);
 
                     if (userId > 0 && friendId > 0) {
-                        getChatHistory(userId, friendId, sock);
+                        getChatHistory(userId, friendId, sock, curr);
                     }
                 }
             }
             else if (strncmp(fullMessage, "getAvatar/", 10) == 0) {
-                pthread_mutex_lock(&clientsMutex);
-                ClientSession *curr2 = activeClients;
-                if (!curr2) {
-                    pthread_mutex_unlock(&clientsMutex);
+                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                    printf(RED "[%s][GET AVATAR]" RESET " %d attempted unauthorized avatar downloading\n", buffer, sock);
                     goto onfail;
                 }
-                while (curr2) {
-                    if (curr2->sock == sock) {
-                        if (curr2->loggedIn==false || curr2->hasSessionKey==false) {
-                            printf(RED "[%s][GET AVATAR]" RESET " %d attempted unauthorized avatar downloading\n", buffer, sock);
-                            pthread_mutex_unlock(&clientsMutex);
-                            goto onfail;
-                        }
-                    }
-                    curr2 = curr2->next;
-                }
-                pthread_mutex_unlock(&clientsMutex);
                 long uid = strtol(fullMessage + 10, nullptr, 10);
                 printf("[%s][GET AVATAR] requested %ld's avatar\n", buffer, uid);
                 char filepath[256];
@@ -1325,7 +1215,8 @@ void* acceptMessage(void *arg) {
                     long fileSize = ftell(f);
                     fseek(f, 0, SEEK_SET);
 
-                    unsigned char *pngData = malloc(fileSize);
+                    unsigned char *pngData = malloc(fileSize * sizeof(unsigned char));
+                    memset(pngData, 0, fileSize);
                     fread(pngData, 1, fileSize, f);
                     fclose(f);
 
@@ -1333,7 +1224,7 @@ void* acceptMessage(void *arg) {
                     free(pngData);
 
                     if (b64) {
-                        snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E%s", uid, b64);
+                        snprintf(response, PACKET_SIZE, "getAvatarResponse/%ld\x1E%s", uid, b64);
                         free(b64);
                         printf("[%s][GET AVATAR] sent avatar for %ld (%ld bytes)\n", buffer, uid, fileSize);
                     }
@@ -1344,23 +1235,10 @@ void* acceptMessage(void *arg) {
                 }
             }
             else if (strncmp(fullMessage, "saveAvatar/", 11) == 0) {
-                pthread_mutex_lock(&clientsMutex);
-                ClientSession *curr2 = activeClients;
-                if (!curr2) {
-                    pthread_mutex_unlock(&clientsMutex);
+                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                    printf(RED "[%s][SAVE AVATAR]" RESET " %d attempted unauthorized avatar saving\n", buffer, sock);
                     goto onfail;
                 }
-                while (curr2) {
-                    if (curr2->sock == sock) {
-                        if (curr2->loggedIn==false || curr2->hasSessionKey==false) {
-                            printf(RED "[%s][SAVE AVATAR]" RESET " %d attempted unauthorized avatar saving\n", buffer, sock);
-                            pthread_mutex_unlock(&clientsMutex);
-                            goto onfail;
-                        }
-                    }
-                    curr2 = curr2->next;
-                }
-                pthread_mutex_unlock(&clientsMutex);
                 char *ptr = fullMessage + 12;
                 long userId = strtol(ptr, &ptr, 10);
 
@@ -1380,6 +1258,7 @@ void* acceptMessage(void *arg) {
                 if (!png_data || decoded_len < 500) { // minimal PNG size
                     printf("[%s][SAVE AVATAR] Decode failed or image too small (%d bytes)\n", buffer, decoded_len);
                     free(png_data);
+                    goto onfail;
                 }
 
                 char binary_path[PATH_MAX] = {0};
@@ -1414,29 +1293,16 @@ void* acceptMessage(void *arg) {
                         printf("[%s][SAVE AVATAR] Write error: only %zu of %d bytes written\n", buffer, written, decoded_len);
                     }
                 } else {
-                    perror("[SAVE AVATAR] fopen failed");
+                    printf("[%s][SAVE AVATAR] fopen failed: %s", buffer, filepath);
                 }
 
                 free(png_data);
             }
             else if (strncmp(fullMessage, "requestPendingFriends/", 22) == 0) {
-                pthread_mutex_lock(&clientsMutex);
-                ClientSession *curr2 = activeClients;
-                if (!curr2) {
-                    pthread_mutex_unlock(&clientsMutex);
+                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                    printf(RED "[%s][REQUEST PENDING FRIENDS]" RESET " %d attempted unauthorized friend list access\n", buffer, sock);
                     goto onfail;
                 }
-                while (curr2) {
-                    if (curr2->sock == sock) {
-                        if (curr2->loggedIn==false || curr2->hasSessionKey==false) {
-                            printf(RED "[%s][REQUEST PENDING FRIENDS]" RESET " %d attempted unauthorized friend list access\n", buffer, sock);
-                            pthread_mutex_unlock(&clientsMutex);
-                            goto onfail;
-                        }
-                    }
-                    curr2 = curr2->next;
-                }
-                pthread_mutex_unlock(&clientsMutex);
                 char *ptr = fullMessage + 22;
                 long userId = strtol(ptr, &ptr, 10);
                 { // FRIEND REQUESTS
@@ -1444,7 +1310,7 @@ void* acceptMessage(void *arg) {
                     int offset = 0;
                     offset += snprintf(response+offset, size-offset, "newFriendRequest/");
 
-                    char query[512];
+                    char query[512] = {0};
                     snprintf(query, sizeof(query),
                         "SELECT u.userId, u.username, u.profileDesc "
                               "FROM users u "
@@ -1483,7 +1349,7 @@ void* acceptMessage(void *arg) {
             }
             onfail:
             if (strlen(response) > 0) {
-                sendPacket(sock, response);
+                sendPacket(sock, response, curr);
                 printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Responding for request (sock %d): %s -> %s\n", buffer, id, sock, fullMessage, response);
                 memset(response, 0, PACKET_SIZE);
             }
@@ -1501,7 +1367,7 @@ void* acceptMessage(void *arg) {
     }
 
     client_disconnect:
-    close(sock);
+    unregisterClient(curr);
     pthread_exit(NULL);
 }
 
@@ -1643,28 +1509,48 @@ int main(void) {
     strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
     printf("[%s][NETWORK] Server is listening on port %d\n", buffer, port);
 
-    while (1) {
-        new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen);
-        if (new_socket < 0) continue;
+    pthread_attr_init(&attr);
+    size_t required_stack = 8 * 1024 * 1024;
+    pthread_attr_setstacksize(&attr, required_stack);
 
-        // CRITICAL: We must allocate memory for the socket ID so it isn't
-        // overwritten by the next accept() before the thread starts!
+    g_server_fd = server_fd;
+
+    struct sigaction sa = {0};
+    sa.sa_handler = handle_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+
+    while (!g_shutdown) {
+        new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
+        if (new_socket < 0) {
+            if (g_shutdown) break;
+            continue;
+        }
+
         int* client_sock_ptr = malloc(sizeof(int));
         *client_sock_ptr = new_socket;
 
-        if (pthread_create(&thread_id, nullptr, acceptMessage, client_sock_ptr) == 0) {
-            // Tell the OS to reclaim thread resources automatically on exit
+        if (pthread_create(&thread_id, &attr, acceptMessage, client_sock_ptr) == 0) {
             pthread_detach(thread_id);
         } else {
             close(new_socket);
             free(client_sock_ptr);
         }
     }
-    return 0;
 
     // Cleanup
+    pthread_mutex_lock(&clientsMutex);
+    for (ClientSession *c = activeClients; c; c = c->next) {
+        shutdown(c->sock, SHUT_RDWR);
+    }
+    pthread_mutex_unlock(&clientsMutex);
+    usleep(200000);
+    pthread_attr_destroy(&attr);
     close(new_socket);
     close(server_fd);
-    printf("\n");
+    printf("\nExiting.\n");
     return 0;
 }

@@ -69,6 +69,8 @@ typedef struct {
     long senderId;
     long receiverId;
     char message[2049];
+    int cachedHeight;
+    int cachedBubbleWidth;
 } Message;
 Message messages[1000000] = {0};
 long randomId = 0L;
@@ -167,13 +169,13 @@ bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max
     if (!nonce_b64 || !ct_b64) return false;
 
     unsigned char nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES];
-    unsigned char ciphertext[8192];
+    unsigned char ciphertext[PACKET_SIZE-256];
     size_t nonce_len = 0, ct_len = 0;
 
     sodium_base642bin(nonce, sizeof(nonce), nonce_b64, strlen(nonce_b64), nullptr, &nonce_len, nullptr, sodium_base64_VARIANT_ORIGINAL);
     sodium_base642bin(ciphertext, sizeof(ciphertext), ct_b64, strlen(ct_b64), nullptr, &ct_len, nullptr, sodium_base64_VARIANT_ORIGINAL);
 
-    unsigned char decrypted[8192] = {0};
+    unsigned char decrypted[PACKET_SIZE-256] = {0};
     unsigned long long decrypted_len;
     int ret;
 
@@ -213,10 +215,10 @@ void* recieveMessage(void* arg) {
             memcpy(recvBuf + totalReceived, localBuf, bytes);
             totalReceived += bytes;
             recvBuf[totalReceived] = '\0';
-            printf("[DEBUG] LocalBuf has %lu bytes, string is %lu chars long and contains text `%s`. FullMessage has %lu bytes, string is %lu chars long and contains `%s` message. TotalReceived is %d.\n", sizeof(localBuf), strlen(localBuf), localBuf, sizeof(fullMessage), strlen(fullMessage), fullMessage, totalReceived);
 
             char *newlinePos;
             while ((newlinePos = memchr(recvBuf, '\n', totalReceived)) != NULL) {
+                printf("[DEBUG] LocalBuf has %lu bytes, string is %lu chars long and contains text `%s`. FullMessage has %lu bytes, string is %lu chars long and contains `%s` message. TotalReceived is %d.\n", sizeof(localBuf), strlen(localBuf), localBuf, sizeof(fullMessage), strlen(fullMessage), fullMessage, totalReceived);
                 size_t msgLen = (size_t)(newlinePos - recvBuf);
                 if (msgLen >= sizeof(fullMessage)) msgLen = sizeof(fullMessage) - 1;
 
@@ -318,6 +320,7 @@ void* recieveMessage(void* arg) {
 
                     // clearing past friends
                     memset(pendingFriendAvatarArr, 0, sizeof(pendingFriendAvatarArr));
+                    memset(friends, 0, sizeof(friends));
                     friendsCount = -1;
                     isUpdatedFriends = true;
 
@@ -358,24 +361,26 @@ void* recieveMessage(void* arg) {
                     requestedAvatarUpdate = true;
                 }
                 else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
-                    char *dataStart = malloc(sizeof(char)*(strlen(fullMessage)+2));
-                    memcpy(dataStart, fullMessage, strlen(fullMessage)+1);
-                    for (int i=0; i<1000000; i++) {
-                        memset(&messages[i], 0, sizeof(messages[i]));
-                    }
-                    if (strncmp(dataStart+15, "empty", 5) == 0) {
+                    // removed memset - possible freezes
+                    messagesCount = 0;
+
+                    // reading directly fullMessage as we no longer need dataStart (killed a potential memory leak)
+                    if (strncmp(fullMessage + 15, "empty", 5) == 0) {
                         printf("[GET CHAT HISTORY] History is empty\n");
-                        messagesCount = 0;
                         goto next;
                     }
 
                     long friendId = strtol(fullMessage + 15, nullptr, 10);
 
-                    // copy all at a time
-                    size_t dataLen = strlen(dataStart);
-                    char *dataCopy = malloc(dataLen);
+                    // looking for \x1E after friend id
+                    char *historyStart = strchr(fullMessage + 15, '\x1E');
+                    if (!historyStart) goto next; // if theres no one or packet was cursed - exiting
+
+                    historyStart++; // moving a pointer a step further to skip \x1F
+
+                    // safely cpying only messages
+                    char *dataCopy = strdup(historyStart);
                     if (!dataCopy) goto next;
-                    memcpy(dataCopy, dataStart+26, dataLen);
 
                     messagesCount = -1;
                     isUpdatedMessages = true;
@@ -1620,6 +1625,7 @@ int main(void) {
     bool wrongPass = false;
     bool triedAvatar = false;
     int profilePage = 1;
+    bool loggedIn = false;
 
     while (!WindowShouldClose()) {
         float chatContentHeight = 0.0f;
@@ -1692,7 +1698,7 @@ int main(void) {
                                         char msgBuf[BUFFER_SIZE] = {0};
                                         snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s", config.userId, config.email, config.passwordHash);
                                         sendMessage(msgBuf);
-                                        again:
+                                        loggedIn=true;
                                         if (hasSessionKey) {
                                             memset(msgBuf, 0, BUFFER_SIZE);
                                             snprintf(msgBuf, sizeof(msgBuf), "getFriendsList/%ld", config.userId);
@@ -1811,8 +1817,9 @@ int main(void) {
                     }
                     if (config.userId == 0) {
                         printf("[CREATE USER ID] Timed out while waiting ID from server. retrying\n");
+                        connected=false;
                         config.isFirstUsed = true;
-                        continue;
+                        goto next;
                     }
                     memset(config.avatarUrl, 0, MAX_AVATAR);
                     strncpy(config.avatarUrl, "null", 4);
@@ -1884,6 +1891,12 @@ int main(void) {
                         printf("[LOAD SELF AVATAR] Current path: %s\n", avatarPathInput);
                     }
                     loadedAvatar=true;
+                }
+                if (loggedIn == false) {
+                    char msgBuf[BUFFER_SIZE] = {0};
+                    snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s", config.userId, config.email, config.passwordHash);
+                    sendMessage(msgBuf);
+                    loggedIn=true;
                 }
 
                 DrawRectangleLines(1, 1, 300, 899, mainColor);
@@ -2116,7 +2129,7 @@ int main(void) {
                 }
 
                 // Friend section
-                if (friendsCount > 0) {
+                if (friendsCount++ > 0) {
                     friendsCount += 1*isUpdatedFriends;
                     isUpdatedFriends = false;
                     float friendStartY = 90.0f;
@@ -2229,10 +2242,10 @@ int main(void) {
                     }
                 } else if (friendsCount == 0) {
                     Vector2 result = MeasureTextEx(font, "--пусто--", 20, 2);
-                    DrawTextEx(font, "--пусто--", (Vector2){(301.0f/2-result.x/2), 40}, 20, 2, secondaryColor);
+                    DrawTextEx(font, "--пусто--", (Vector2){(301.0f/2-result.x/2), 80}, 20, 2, secondaryColor);
                 } else if (friendsCount == -1) {
                     Vector2 result = MeasureTextEx(font, "--ошибка чтения--", 20, 2);
-                    DrawTextEx(font, "--ошибка чтения--", (Vector2){(301.0f/2-result.x/2), 40}, 20, 2, secondaryColor);
+                    DrawTextEx(font, "--ошибка чтения--", (Vector2){(301.0f/2-result.x/2), 80}, 20, 2, secondaryColor);
                 }
 
                 // Update friend avatars section
@@ -2299,7 +2312,7 @@ int main(void) {
                     isAddingFriend=true;
                 }
                 if (hasFriendRequests==true) {
-                    DrawCircle(121, 44, 6, RED);
+                    DrawCircle(111, 44, 6, RED);
                 }
                 if (GuiButton((Rectangle){127, 45, 120, 30}, "+ Группа")) {
                     // TODO версия 3.0
@@ -2308,9 +2321,13 @@ int main(void) {
                     for (int i=0; i<100; i++) {
                         memset(&friends[i], 0, sizeof(friends[i]));
                     }
-                    char req[34] = {0};
-                    snprintf(req, 33, "getFriendsList/%ld", config.userId);
+                    char req[96] = {0};
+                    snprintf(req, 96, "getFriendsList/%ld", config.userId);
                     sendMessage(req);
+                    memset(req, 0, 96);
+                    snprintf(req, 96, "requestPendingFriends/%ld", config.userId);
+                    sendMessage(req);
+                    requestedAvatarUpdate=true;
                 }
 
                 // Chat section
@@ -2336,50 +2353,64 @@ int main(void) {
 
                 // Message section
                 if (messagesCount > 0) {
-                    messagesCount += 1*isUpdatedMessages;
-                    isUpdatedMessages = false;
-                    for (int i = 0; i<messagesCount; i++) {
+                    // FAST CACHE
+                    // calculating only messages that doesnt have cachedHeight value
+                    for (int i = 0; i < messagesCount; i++) {
                         Message *m = &messages[i];
-                        const int maxTextW = (int)chatArea.width - 120;
+                        if (m->cachedHeight == 0) {
+                            int maxBubbleWidth = (int)chatArea.width - 220;
+                            int maxTextWidth = maxBubbleWidth - 40;
 
-                        char dummy[2048] = {0};
-                        int textH = WrapText(m->message, dummy, sizeof(dummy), maxTextW, font, 22, 2);
-                        chatContentHeight += (float)textH + 25 + 18;   // text height + indents
+                            char dummy[2048] = {0};
+                            int textHeight = WrapText(m->message, dummy, sizeof(dummy), maxTextWidth, font, 22, 2);
+                            Vector2 tMeasure = MeasureTextEx(font, dummy, 22.0f, 2.0f);
+
+                            m->cachedBubbleWidth = (int)tMeasure.x + 40;
+                            m->cachedHeight = textHeight + 25;
+                        }
                     }
+
+                    // calculating main height for scrollbar
+                    chatContentHeight = 0.0f;
+                    for (int i = 0; i < messagesCount; i++) {
+                        chatContentHeight += (float)messages[i].cachedHeight + 18;
+                    }
+
                     if (chatContentHeight < 680) chatScrollOffset = 0;
                     float maxScroll = fmaxf(0.0f, chatContentHeight - 680.0f);
                     chatScrollOffset = clamp(chatScrollOffset, 0.0f, maxScroll);
-                    if (chatAutoScrollAllowed==true && messagesCount > 0) {
+                    if (chatAutoScrollAllowed == true && messagesCount > 0) {
                         chatScrollOffset = maxScroll;
                     }
 
+                    // rendering
                     float currentY = 100 - chatScrollOffset;
+
                     for (int i = 0; i < messagesCount; i++) {
                         Message *m = &messages[i];
                         bool isMine = (m->senderId == config.userId);
 
-                        int maxBubbleWidth = (int)chatArea.width - 220;
-                        int maxTextWidth = maxBubbleWidth - 40;
-                        char wrapped[2048] = {0};
-                        int textHeight = WrapText(m->message, wrapped, sizeof(wrapped), maxTextWidth,
-                                                 font, 22, 2);
-                        Vector2 tMeasure = MeasureTextEx(font, wrapped, (float)22, 2.0f);
-                        maxBubbleWidth = (int)tMeasure.x + 40;
-                        int bubbleHeight = textHeight + 25;
+                        int bubbleHeight = m->cachedHeight;
+                        int bubbleWidth = m->cachedBubbleWidth;
 
-                        Rectangle bubble = {
-                            isMine ? (chatArea.x + chatArea.width - (float)maxBubbleWidth - 10) : (chatArea.x + 30),
-                            currentY,
-                            (float)maxBubbleWidth,
-                            (float)bubbleHeight
-                        };
+                        // CULLING
+                        // if bubble can be physically viewed - drawing it
+                        if (currentY > 80 && currentY < 780) {
+                            Rectangle bubble = {
+                                isMine ? (chatArea.x + chatArea.width - (float)bubbleWidth - 10) : (chatArea.x + 30),
+                                currentY,
+                                (float)bubbleWidth,
+                                (float)bubbleHeight
+                            };
 
-                        if (bubble.y > 80 && bubble.y + (float)bubbleHeight < 840) {
                             Color bubbleColor = isMine ? (Color){158, 105, 32, 255} : (Color){70, 70, 60, 255};
 
                             DrawRectangleRec(bubble, bubbleColor);
                             DrawRectangleLinesEx(bubble, 2, secondary2Color);
 
+                            int maxTextWidth = ((int)chatArea.width - 220) - 40;
+                            char wrapped[2048] = {0};
+                            WrapText(m->message, wrapped, sizeof(wrapped), maxTextWidth, font, 22, 2);
                             DrawWrappedText(wrapped, (Vector2){bubble.x + 20, bubble.y + 12}, font, 22, 2, mainColor);
                         }
 
@@ -2537,7 +2568,7 @@ int main(void) {
 
                 break;
         }
-
+        next:
         EndDrawing();
     }
     // Close connection
