@@ -254,7 +254,7 @@ void* recieveMessage(void* arg) {
                         char received[128] = {0};
                         sodium_bin2base64(received, sizeof(received), serverPub, sizeof(serverPub), sodium_base64_VARIANT_ORIGINAL);
                         if (!pinned || strcmp(pinned, received) != 0) {
-                            printf("[CRYPTO] Server public key does not match SECURETTY_SERVER_PUBKEY\n");
+                            printf("[CR] Server public key does not match SECURETTY_SERVER_PUBKEY\n");
                             connected = false;
                             goto next;
                         }
@@ -537,7 +537,7 @@ void* recieveMessage(void* arg) {
                 else if (strncmp(fullMessage, "updateClient/messages/", 22) == 0) {
                     char *ptr = malloc(sizeof(char)*(strlen(fullMessage)+2));
                     if (!ptr) {
-                        printf("[UPDATE CLIENT] Out of memory\n");
+                        printf(" Out of memory\n");
                         goto next;
                     }
                     memcpy(ptr, fullMessage, strlen(fullMessage)+1);
@@ -573,7 +573,7 @@ void* recieveMessage(void* arg) {
                         token = strtok(nullptr, "\x1E");
                     }
 
-                     printf("[UPDATE CLIENT] Got %d new messages\n", totalNew);
+                     printf(" Got %d new messages\n", totalNew);
                      free(ptr);
                 }
                 else if (strncmp(fullMessage, "updateClient/friendRequests", 27) == 0) {

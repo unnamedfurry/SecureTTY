@@ -1,6 +1,7 @@
 name: build
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -20,9 +21,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build pkg-config gcc g++ \
-            libraylib-dev libssl-dev libsodium-dev libmysqlclient-dev \
+            libssl-dev libsodium-dev default-libmysqlclient-dev \
             libgl-dev libx11-dev libxrandr-dev libxinerama-dev \
             libxi-dev libxcursor-dev libxext-dev libxfixes-dev
+
+      - name: Build raylib
+        run: |
+          git clone --depth 1 --branch 5.5 https://github.com/raysan5/raylib.git /tmp/raylib
+          cmake -S /tmp/raylib -B /tmp/raylib-build -G Ninja \
+            -DBUILD_EXAMPLES=OFF -DBUILD_GAMES=OFF -DCMAKE_BUILD_TYPE=Release
+          sudo cmake --build /tmp/raylib-build --parallel
+          sudo cmake --install /tmp/raylib-build
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -35,7 +44,7 @@ jobs:
           mkdir -p dist/securetty
           install -m 755 client dist/securetty/client
           install -m 755 server dist/securetty/server
-          install -m 644 README.md LICENSE Pixellari.ttf dist/securetty/
+          install -m 644 README.md LICENSE Pixellari.ttf installer-beta.sh dist/securetty/
           tar -C dist -czf securetty-linux-x86_64.tar.gz securetty
 
       - name: Upload artifact
@@ -62,7 +71,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="v$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
+          tag="v$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
           gh release create "$tag" securetty-linux-x86_64.tar.gz \
             --title "SecureTTY $tag" \
             --generate-notes
