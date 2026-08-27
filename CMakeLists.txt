@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.2)
+cmake_minimum_required(VERSION 3.20)
 project(SecureTTY C)
 
 set(CMAKE_C_STANDARD 23)
@@ -10,11 +10,8 @@ pkg_check_modules(SODIUM REQUIRED libsodium)
 pkg_check_modules(MYSQL REQUIRED mysqlclient)
 
 add_executable(client client.c)
-add_executable(config_tool config_tool.c)
 add_executable(server server.c)
 target_link_libraries(client PRIVATE raylib GL m pthread dl rt X11 Xrandr Xinerama Xi Xcursor OpenSSL::SSL OpenSSL::Crypto ${SODIUM_LIBRARIES})
-target_link_libraries(config_tool PRIVATE GL m dl rt X11 Xrandr Xinerama Xi Xcursor OpenSSL::SSL OpenSSL::Crypto ${SODIUM_LIBRARIES})
 target_link_libraries(server PRIVATE m pthread OpenSSL::SSL OpenSSL::Crypto ${MYSQL_LIBRARIES} ${SODIUM_LIBRARIES})
 target_include_directories(client PRIVATE ${CMAKE_SOURCE_DIR}/build_include ${SODIUM_INCLUDE_DIRS})
-target_include_directories(config_tool PRIVATE ${CMAKE_SOURCE_DIR}/build_include ${SODIUM_INCLUDE_DIRS})
 target_include_directories(server PRIVATE ${MYSQL_INCLUDE_DIRS} ${SODIUM_INCLUDE_DIRS})
