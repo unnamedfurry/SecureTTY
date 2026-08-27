@@ -50,6 +50,8 @@ static int g_server_fd = -1;
 static int g_client_socks[MAX_CLIENTS];
 static int g_client_count = 0;
 static pthread_mutex_t g_clients_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned char serverPublicKey[crypto_box_PUBLICKEYBYTES];
+static unsigned char serverPrivateKey[crypto_box_SECRETKEYBYTES];
 void handle_signal(int sig) {
     g_shutdown = 1;
     shutdown(server_fd, SHUT_RDWR); // будит accept()
@@ -94,6 +96,7 @@ typedef struct ClientSession {
     unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
     bool hasSessionKey;
     bool loggedIn;
+    bool closing;
     struct ClientSession *next;
 } ClientSession;
 
@@ -102,6 +105,7 @@ pthread_mutex_t clientsMutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Encrypting packet to client
 bool EncryptPacket(ClientSession *session, const char* plaintext, char* out_buffer, size_t max_size) {
+    if (!session || !plaintext || !out_buffer || max_size < 2) return false;
     if (!session->hasSessionKey) {
         if (strncmp(plaintext, "keyexchange_ok/", 15) == 0) {
             session->hasSessionKey=true;
@@ -149,14 +153,18 @@ bool sendPacket(int sock, const char *data, ClientSession *curr) {
     }
 
     packet[strlen(packet)]='\n';
-    int sent = (int)send(sock, packet, strlen(packet), MSG_NOSIGNAL);
-    if (sent < 0) {
+    size_t length = strlen(packet), sent = 0;
+    while (sent < length) {
+        ssize_t n = send(sock, packet + sent, length - sent, MSG_NOSIGNAL);
+        if (n <= 0) {
         if (errno == EPIPE || errno == ECONNRESET) {
             printf("[%s][SEND] Client disconnected (sock=%d)\n", buffer, sock);
         } else {
             printf("[%s][SEND] send() error: %s (sock=%d)\n", buffer, strerror(errno), sock);
         }
         return false;
+        }
+        sent += (size_t)n;
     }
 
     printf("[%s][SEND] Sent successfully: %s (sock=%d)\n", buffer, packet, sock);
@@ -189,10 +197,16 @@ void registerClient(long userId, int sock) {
     while (curr) {
         if (curr->userId == userId && curr->sock != sock) {
             close(curr->sock);
-            if (prev) prev->next = curr->next; else activeClients = curr->next;
-            ClientSession *tofree = curr;
+            pthread_mutex_lock(&g_clients_lock);
+            for (int i = 0; i < g_client_count; i++) {
+                if (g_client_socks[i] == curr->sock) {
+                    g_client_socks[i] = g_client_socks[--g_client_count];
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&g_clients_lock);
+            curr->closing = true;
             curr = curr->next;
-            free(tofree);
             printf("[%s][NETWORK] Replacing old session for user %ld\n", buffer, userId);
             continue;
         }
@@ -209,6 +223,7 @@ void registerClient(long userId, int sock) {
 
 // remove client after disconnecting
 void unregisterClient(ClientSession *curr) {
+    if (!curr) return;
     pthread_mutex_lock(&g_clients_lock);
     for (int i = 0; i < g_client_count; i++) {
         if (g_client_socks[i] == curr->sock) {
@@ -248,11 +263,17 @@ bool pushToUser(long userId, const char *data, ClientSession *curr) {
     info = localtime(&rawtime);
     strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
 
-    int sock = curr->sock;
-    bool ok = sendPacket(sock, data, curr);
+    if (!curr || !data || userId <= 0) return false;
+    pthread_mutex_lock(&clientsMutex);
+    ClientSession *target = nullptr;
+    for (ClientSession *c = activeClients; c; c = c->next) {
+        if (c->userId == userId && !c->closing && c->loggedIn && c->hasSessionKey) { target = c; break; }
+    }
+    bool ok = target ? sendPacket(target->sock, data, target) : false;
+    pthread_mutex_unlock(&clientsMutex);
 
     if (!ok) {
-        printf("[%s][PUSH] Failed to send to user %ld (sock=%d). Will be cleaned on next read.\n", buffer, userId, sock);
+        printf("[%s][PUSH] Failed to send to user %ld.\n", buffer, userId);
     }
     return ok;
 }
@@ -265,14 +286,10 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
     info = localtime(&rawtime);
     strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
     { // MESSAGES
-        int size = sizeof(char)*1050;
+        int size = PACKET_SIZE;
         char *response = malloc(size * sizeof(char));
         if (response == NULL) {
             printf("[%s][FATAL | CLIENT UPDATES] Not enough memory for updateClient answer", buffer);
-            snprintf(response, 29, "updateClient/messages/error");
-            sendPacket(sock, response, curr);
-            free(response);
-            pthread_mutex_unlock(&mysql_mutex);
             return;
         }
         int offset = 0;
@@ -296,8 +313,11 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
                     int count = atoi(row[1]);
                     totalNew += count;
 
-                    offset += snprintf(response+offset, size-offset,
-                                      "%ld\x1F%d\x1E", sender, count);
+                    if (offset < size - 1) {
+                        int written = snprintf(response + offset, size - offset,
+                                               "%ld\x1F%d\x1E", sender, count);
+                        if (written > 0) offset += written < size - offset ? written : size - offset - 1;
+                    }
                 }
                 mysql_free_result(res);
             } else {
@@ -313,14 +333,10 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
     }
 
     { // FRIEND REQUESTS
-        int size = sizeof(char)*1024;
+        int size = PACKET_SIZE;
         char *response = malloc(size * sizeof(char));
         if (response == NULL) {
             printf("[%s][FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n", buffer);
-            snprintf(response, 35, "updateClient/friendRequests/error");
-            sendPacket(sock, response, curr);
-            free(response);
-            pthread_mutex_unlock(&mysql_mutex);
             return;
         }
         int offset = 0;
@@ -343,12 +359,20 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
                 int messageOffset = 0;
 
                 while ((row = mysql_fetch_row(res))) {
-                    messageOffset += snprintf(message+messageOffset, size-messageOffset,
+                    if (messageOffset >= (int)sizeof(message) - 1) break;
+                    int written = snprintf(message+messageOffset, sizeof(message)-messageOffset,
                         "%s\x1F%s\x1F%s\x1E",   // userId, username, profileDesc
                         row[0] ? row[0] : "0",
                         row[1] ? row[1] : "0",
                         row[2] ? row[2] : ""
                     );
+                    if (written < 0) break;
+                    messageOffset += written;
+                    if (messageOffset >= (int)sizeof(message)) {
+                        messageOffset = sizeof(message) - 1;
+                        message[messageOffset] = '\0';
+                        break;
+                    }
                 }
                 mysql_free_result(res);
 
@@ -385,14 +409,11 @@ void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
 
     int bufSize = BUFFER_SIZE;
     char *response = malloc(bufSize * sizeof(char));
-    memset(response, 0, bufSize);
     if (!response) {
         printf("[%s][FATAL | GET CHAT HISTORY] Not enough memory for getChatHistory answer\n", buffer);
-        snprintf(response, 23, "getChatHistory/error");
-        sendPacket(sock, response, curr);
-        free(response);
         return;
     }
+    memset(response, 0, bufSize);
     int offset = snprintf(response, bufSize, "getChatHistory/%ld\x1E", friendId);
 
     char query[512] = {0};
@@ -424,17 +445,18 @@ void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
 
     MYSQL_ROW row;
     while ((row = mysql_fetch_row(res))) {
-        if (offset+1024 > bufSize) {
-            bufSize+=BUFFER_SIZE;
+        size_t needed = strlen(row[2] ? row[2] : "null") + 64;
+        if ((size_t)offset + needed >= (size_t)bufSize) {
+            while ((size_t)offset + needed >= (size_t)bufSize) bufSize += BUFFER_SIZE;
             char *newResponse = realloc(response, bufSize);
             if (!newResponse) {
                 printf(RED "[%s][FATAL | GET CHAT HISTORY]" RESET " Not enough memory for getChatHistory answer\n", buffer);
-                free(newResponse);
                 free(response);
+                mysql_free_result(res);
+                pthread_mutex_unlock(&mysql_mutex);
                 return;
             }
-            response = newResponse;
-            free(newResponse);
+                response = newResponse;
         }
         long msgId = strtol(row[0], nullptr, 10);
         long sender = strtol(row[1], nullptr, 10);
@@ -548,14 +570,21 @@ bool saveMessageToDB(long messageId, long senderId, long receiverId, const char 
 char* getUserFromDB(long userId) {
     char query[64] = {0};
     char *response = malloc(1960 * sizeof(char));
-    sprintf(query, "SELECT avatarUrl, profileDesc FROM users WHERE userId = %ld", userId);
+    if (!response) return nullptr;
+    response[0] = '\0';
+    snprintf(query, sizeof(query), "SELECT avatarUrl, profileDesc FROM users WHERE userId = %ld", userId);
+    pthread_mutex_lock(&mysql_mutex);
     if (mysql_query(conn, query)) {
         printf("[GET USER FROM DB] SELECT err: %s\n", mysql_error(conn));
+        pthread_mutex_unlock(&mysql_mutex);
+        free(response);
         return nullptr;
     } else {
         MYSQL_RES *res = mysql_store_result(conn); // loading result ro memory
         if (res == NULL) {
             mysql_free_result(res);
+            pthread_mutex_unlock(&mysql_mutex);
+            free(response);
             return nullptr;
         }
 
@@ -563,12 +592,13 @@ char* getUserFromDB(long userId) {
         //int num_fields = (int)mysql_num_fields(res); // number of columns
 
         while ((row = mysql_fetch_row(res))) {
-            snprintf(response, PACKET_SIZE, "%s\x1E%s", row[0], row[1]);
+            snprintf(response, 1960, "%s\x1E%s", row[0] ? row[0] : "", row[1] ? row[1] : "");
             break;
         }
 
         mysql_free_result(res); // free memory
     }
+    pthread_mutex_unlock(&mysql_mutex);
     return response;
 }
 
@@ -778,6 +808,7 @@ unsigned char* Base64Decode(const char* input, int* out_len) {
 bool finishedResponse = false;
 // Decrypting received packet
 bool DecryptPacket(unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES], const char* input, char* out_plain, size_t max_size) {
+    if (!serverSessionKey || !input || !out_plain || max_size < 2) return false;
     if (strncmp(input, "enc:", 4) != 0) {
         strncpy(out_plain, input, max_size - 1);
         out_plain[max_size - 1] = '\0';
@@ -793,8 +824,10 @@ bool DecryptPacket(unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_
     unsigned char ct[PACKET_SIZE/2];
     size_t nlen = 0, clen = 0;
 
-    sodium_base642bin(nonce, sizeof(nonce), nonce_b64, strlen(nonce_b64), nullptr, &nlen, nullptr, sodium_base64_VARIANT_ORIGINAL);
-    sodium_base642bin(ct, sizeof(ct), ct_b64, strlen(ct_b64), nullptr, &clen, nullptr, sodium_base64_VARIANT_ORIGINAL);
+    if (sodium_base642bin(nonce, sizeof(nonce), nonce_b64, strlen(nonce_b64), nullptr, &nlen, nullptr, sodium_base64_VARIANT_ORIGINAL) != 0 ||
+        nlen != sizeof(nonce) ||
+        sodium_base642bin(ct, sizeof(ct), ct_b64, strlen(ct_b64), nullptr, &clen, nullptr, sodium_base64_VARIANT_ORIGINAL) != 0 ||
+        clen < crypto_aead_xchacha20poly1305_ietf_ABYTES) return false;
 
     unsigned char decrypted[PACKET_SIZE] = {0};
     unsigned long long decrypted_len;
@@ -886,23 +919,26 @@ void* acceptMessage(void *arg) {
                         goto onfail;
                 }
 
-                unsigned char serverPub[crypto_box_PUBLICKEYBYTES] = {0};
-                unsigned char serverPriv[crypto_box_SECRETKEYBYTES] = {0};
-                crypto_box_keypair(serverPub, serverPriv);
+                unsigned char *serverPub = serverPublicKey;
+                unsigned char *serverPriv = serverPrivateKey;
                 if (!curr) {
                     curr = malloc(sizeof(ClientSession));
+                    if (!curr) { snprintf(response, sizeof(response), "keyexchange/error"); goto onfail; }
                     curr->userId = 0;               // not authenticated yet
                     curr->sock = sock;
                     curr->hasSessionKey = false;
                     curr->loggedIn = false;
+                    curr->closing = false;
+                    pthread_mutex_lock(&clientsMutex);
                     curr->next = activeClients;
                     activeClients = curr;
+                    pthread_mutex_unlock(&clientsMutex);
                 }
 
                 if (crypto_box_beforenm(curr->serverSessionKey, clientPubKey, serverPriv) == 0) {
                     printf("[CRYPTO] Server session key: %p\n", (void*)curr->serverSessionKey);
                     char pub_b64[128] = {0};
-                    sodium_bin2base64(pub_b64, sizeof(pub_b64), serverPub, sizeof(serverPub), sodium_base64_VARIANT_ORIGINAL);
+                     sodium_bin2base64(pub_b64, sizeof(pub_b64), serverPub, crypto_box_PUBLICKEYBYTES, sodium_base64_VARIANT_ORIGINAL);
                     snprintf(response, sizeof(response), "keyexchange/myturn/%s", pub_b64);
                     goto onfail;
                 } else {
@@ -920,8 +956,10 @@ void* acceptMessage(void *arg) {
                 if (dlen >= sizeof(fullMessage)) dlen = sizeof(fullMessage) - 1;
                 memcpy(fullMessage, decrypted, dlen);
                 fullMessage[dlen] = '\0';
-                curr->hasSessionKey=true;
+                if (curr) curr->hasSessionKey=true;
             }
+
+            if (!curr) goto onfail;
 
             if (strcmp(fullMessage, "test/") == 0) {
                 snprintf(response, sizeof(response), "ok");
@@ -936,9 +974,17 @@ void* acceptMessage(void *arg) {
                     parts[count++] = token;
                     token = strtok(nullptr, "\x1E");
                 }
+                if (count != 4 || parts[3] == nullptr) {
+                    snprintf(response, sizeof(response), "receive-message/badformat");
+                    goto onfail;
+                }
                 long messageId = strtol(parts[0], nullptr, 10);
                 long senderId = strtol(parts[1], nullptr, 10);
                 long receiverId = strtol(parts[2], nullptr, 10);
+                if (senderId != curr->userId || receiverId <= 0) {
+                    snprintf(response, sizeof(response), "receive-message/unauthorized");
+                    goto onfail;
+                }
                 if (saveMessageToDB(messageId, senderId, receiverId, parts[3])) {
                     printf("[%s][RECEIVE MESSAGE] Message saved: %ld -> %ld\n", buffer, senderId, receiverId);
                     char pushPacket[BUFFER_SIZE];
@@ -956,14 +1002,14 @@ void* acceptMessage(void *arg) {
                 srand(time(nullptr) ^ clock());
                 // generating 10-digit number from 1000000000 to 9999999999
                 long userId = 1000000000L + (rand() % 9000000000L);
-                sprintf(response, "createId/user/%ld", userId);
+                snprintf(response, sizeof(response), "createId/user/%ld", userId);
                 printf("[%s][CREATE USER ID] New Id generated for user: %ld\n", buffer, userId);
             }
             else if (strncmp(fullMessage, "createId/message", 16) == 0) {
                 srand(time(nullptr) ^ clock());
                 // generating 10-digit number from 1000000000 to 9999999999
                 long userId = 1000000000L + (rand() % 9000000000L);
-                sprintf(response, "createId/message/%ld", userId);
+                snprintf(response, sizeof(response), "createId/message/%ld", userId);
                 printf("[%s][CREATE MESSAGE ID] New Id generated for message: %ld\n", buffer, userId);
             }
             else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
@@ -971,9 +1017,6 @@ void* acceptMessage(void *arg) {
                     printf(RED "[%s][SAVE PROFILE]" RESET " %d attempted unsecured save profile access\n", buffer, sock);
                     goto onfail;
                 }
-                char *badprofile = malloc(128 * sizeof(char));
-                memset(badprofile, 0, 128);
-                strncpy(badprofile, fullMessage+13, strlen(fullMessage+13));
                 char *parts[6] = {0};
                 int count = 0;
                 char *token = strtok(fullMessage + 13, "\x1E");
@@ -985,6 +1028,10 @@ void* acceptMessage(void *arg) {
 
                 if (count >= 6) {
                     long uid = strtol(parts[0], nullptr, 10);
+                    if (uid != curr->userId || !curr->loggedIn) {
+                        snprintf(response, sizeof(response), "save-profile/unauthorized");
+                        goto onfail;
+                    }
                     printf("[%s][SAVE PROFILE] received for %ld\n", buffer, uid);
                     bool success = saveUserToDB(uid,
                                                 parts[1], parts[2], parts[3],
@@ -994,11 +1041,21 @@ void* acceptMessage(void *arg) {
                         snprintf(response, sizeof(response), "save-profile/ok/");
                     } else {
                         snprintf(response, sizeof(response), "save-profile/error/");
-                        snprintf(response+19, sizeof(response)-19, "%s", getUserFromDB(uid));
+                        char *profile = getUserFromDB(uid);
+                        if (profile) {
+                            snprintf(response+19, sizeof(response)-19, "%s", profile);
+                            free(profile);
+                        }
                     }
                 } else {
                     snprintf(response, sizeof(response), "save-profile/badformat/");
-                    snprintf(response+23, sizeof(response)-24, "%s", getUserFromDB(strtol(parts[0], nullptr, 10)));
+                    if (parts[0]) {
+                        char *profile = getUserFromDB(strtol(parts[0], nullptr, 10));
+                        if (profile) {
+                            snprintf(response+23, sizeof(response)-24, "%s", profile);
+                            free(profile);
+                        }
+                    }
                 }
             }
 
@@ -1008,6 +1065,7 @@ void* acceptMessage(void *arg) {
                     goto onfail;
                 }
                 long userId = strtol(fullMessage + 15, nullptr, 10);
+                if (userId != curr->userId) { snprintf(response, sizeof(response), "getFriendsList/unauthorized"); goto onfail; }
                 if (userId <= 0) goto onfail;
                 int offset = snprintf(response, sizeof(response), "getFriendsList/");
 
@@ -1041,7 +1099,7 @@ void* acceptMessage(void *arg) {
                 if (offset > 15) {   // if there is atleast one friend
                     printf("[%s][GET FRIENDS LIST] Sent for %ld\n", buffer, userId);
                 } else {
-                    snprintf(response, sizeof(response), "getFriendList/empty");
+                    snprintf(response, sizeof(response), "getFriendsList/empty");
                 }
             }
             else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
@@ -1060,6 +1118,7 @@ void* acceptMessage(void *arg) {
                 if (count == 2) {
                     long senderId = strtol(parts[0], nullptr, 10);
                     long receiverId = strtol(parts[1], nullptr, 10);
+                    if (senderId != curr->userId) { snprintf(response, sizeof(response), "addFriend/unauthorized"); goto onfail; }
                     printf("[%s][ADD FRIEND] received for %ld -> %ld\n", buffer, senderId, receiverId);
                     if (senderId > 0 && receiverId > 0) {
                         if (sendFriendRequest(senderId, receiverId)) {
@@ -1090,6 +1149,7 @@ void* acceptMessage(void *arg) {
                 if (count == 2) {
                     long receiverId = strtol(parts[0], nullptr, 10);
                     long senderId   = strtol(parts[1], nullptr, 10);
+                    if (receiverId != curr->userId) { snprintf(response, sizeof(response), "acceptFriend/unauthorized"); goto onfail; }
 
                     if (acceptFriendRequest(receiverId, senderId)) {
                         // updating both clients
@@ -1109,15 +1169,19 @@ void* acceptMessage(void *arg) {
                 }
                 long userId = strtol(fullMessage + 13, nullptr, 10);
                 printf("[%s][UPDATE CLIENT] Received for client/user %ld\n", buffer, userId);
-                if (userId > 0) {
+                if (userId == curr->userId) {
                     getClientUpdates(userId, sock, curr);
+                } else {
+                    snprintf(response, sizeof(response), "updateClient/unauthorized");
                 }
             }
             else if (strncmp(fullMessage, "registerClient/", 15) == 0) {
                 long userId = strtol(fullMessage + 15, nullptr, 10);
                 printf("[%s][REGISTER CLIENT] Received for client/user %ld\n", buffer, userId);
-                if (userId > 0) {
+                if (curr->userId == 0 && !curr->loggedIn && userId > 0) {
                     registerClient(userId, sock);
+                } else {
+                    snprintf(response, sizeof(response), "registerClient/unauthorized");
                 }
             }
             else if (strncmp(fullMessage, "login/", 6) == 0) {
@@ -1143,14 +1207,20 @@ void* acceptMessage(void *arg) {
                     printf("[%s][LOGIN CLIENT] Query Error: %s\n", buffer, mysql_error(conn));
                     pthread_mutex_unlock(&mysql_mutex);
                     unregisterClient(curr);
+                    free(curr);
+                    curr = nullptr;
                     close(sock);
+                    goto client_disconnect;
                 }
                 MYSQL_RES *result = mysql_store_result(conn);
                 if (result == NULL) {
                     mysql_free_result(result);
                     pthread_mutex_unlock(&mysql_mutex);
                     unregisterClient(curr);
+                    free(curr);
+                    curr = nullptr;
                     close(sock);
+                    goto client_disconnect;
                 }
                 MYSQL_ROW row = mysql_fetch_row(result);
                 if (row != NULL && row[0] != NULL) {
@@ -1158,7 +1228,10 @@ void* acceptMessage(void *arg) {
                 } else {
                     printf("[%s][LOGIN CLIENT] No matching user found.\n", buffer);
                     unregisterClient(curr);
+                    free(curr);
+                    curr = nullptr;
                     close(sock);
+                    goto client_disconnect;
                 }
                 mysql_free_result(result);
                 pthread_mutex_unlock(&mysql_mutex);
@@ -1194,7 +1267,7 @@ void* acceptMessage(void *arg) {
                     long friendId = strtol(parts[1], nullptr, 10);
                     printf("[%s][GET CHAT HISTORY] Received history request from %ld with %ld\n", buffer, userId, friendId);
 
-                    if (userId > 0 && friendId > 0) {
+                    if (userId == curr->userId && friendId > 0) {
                         getChatHistory(userId, friendId, sock, curr);
                     }
                 }
@@ -1205,6 +1278,7 @@ void* acceptMessage(void *arg) {
                     goto onfail;
                 }
                 long uid = strtol(fullMessage + 10, nullptr, 10);
+                if (uid <= 0) { snprintf(response, sizeof(response), "getAvatar/badformat"); goto onfail; }
                 printf("[%s][GET AVATAR] requested %ld's avatar\n", buffer, uid);
                 char filepath[256];
                 snprintf(filepath, sizeof(filepath), "avatars/%ld.png", uid);
@@ -1215,8 +1289,19 @@ void* acceptMessage(void *arg) {
                     long fileSize = ftell(f);
                     fseek(f, 0, SEEK_SET);
 
+                    if (fileSize <= 0 || fileSize > PACKET_SIZE) {
+                        fclose(f);
+                        snprintf(response, sizeof(response), "getAvatar/error");
+                        goto onfail;
+                    }
+
                     unsigned char *pngData = malloc(fileSize * sizeof(unsigned char));
-                    memset(pngData, 0, fileSize);
+                    if (!pngData) {
+                        fclose(f);
+                        snprintf(response, sizeof(response), "getAvatar/error");
+                        goto onfail;
+                    }
+                    memset(pngData, 0, (size_t)fileSize);
                     fread(pngData, 1, fileSize, f);
                     fclose(f);
 
@@ -1239,12 +1324,14 @@ void* acceptMessage(void *arg) {
                     printf(RED "[%s][SAVE AVATAR]" RESET " %d attempted unauthorized avatar saving\n", buffer, sock);
                     goto onfail;
                 }
-                char *ptr = fullMessage + 12;
+                char *ptr = fullMessage + 11;
                 long userId = strtol(ptr, &ptr, 10);
 
-                if (userId <= 0 || *ptr != '\x1E') {
+                if (userId != curr->userId || *ptr != '\x1E') {
                     printf("[%s][SAVE AVATAR] Parse error: invalid userId or missing separator\n", buffer);
                     printf("[%s][SAVE AVATAR] Received: %.100s...\n", buffer, fullMessage);
+                    snprintf(response, sizeof(response), "saveAvatar/unauthorized");
+                    goto onfail;
                 }
 
                 char *b64_data = ptr + 1; // base64 start
@@ -1303,8 +1390,12 @@ void* acceptMessage(void *arg) {
                     printf(RED "[%s][REQUEST PENDING FRIENDS]" RESET " %d attempted unauthorized friend list access\n", buffer, sock);
                     goto onfail;
                 }
-                char *ptr = fullMessage + 22;
-                long userId = strtol(ptr, &ptr, 10);
+                 char *ptr = fullMessage + 22;
+                 long userId = strtol(ptr, &ptr, 10);
+                 if (userId != curr->userId) {
+                     snprintf(response, sizeof(response), "requestPendingFriends/unauthorized");
+                     goto onfail;
+                 }
                 { // FRIEND REQUESTS
                     int size = PACKET_SIZE;
                     int offset = 0;
@@ -1327,16 +1418,22 @@ void* acceptMessage(void *arg) {
                             int messageOffset = 0;
 
                             while ((row = mysql_fetch_row(res))) {
-                                messageOffset += snprintf(message+messageOffset, size-messageOffset,
+                                if (messageOffset >= (int)sizeof(message) - 1) break;
+                                int written = snprintf(message + messageOffset, sizeof(message) - messageOffset,
                                     "%s\x1F%s\x1F%s\x1E",   // userId, username, profileDesc
                                     row[0] ? row[0] : "0",
                                     row[1] ? row[1] : "0",
                                     row[2] ? row[2] : ""
                                 );
+                                if (written <= 0) break;
+                                messageOffset += written < (int)sizeof(message) - messageOffset ? written : (int)sizeof(message) - messageOffset - 1;
                             }
                             mysql_free_result(res);
 
-                            offset += snprintf(response+offset, size-offset, "%s", message);
+                if (offset < size - 1) {
+                    int written = snprintf(response + offset, size - offset, "%s", message);
+                    if (written > 0) offset += written < size - offset ? written : size - offset - 1;
+                }
                         } else {
                             offset += snprintf(response+offset, size-offset, "0\x1E");
                         }
@@ -1368,11 +1465,31 @@ void* acceptMessage(void *arg) {
 
     client_disconnect:
     unregisterClient(curr);
+    free(curr);
     pthread_exit(NULL);
 }
 
 int main(void) {
     printf("\n");
+    if (sodium_init() < 0) {
+        fprintf(stderr, "[CRYPTO] sodium initialization failed\n");
+        return 1;
+    }
+    const char *secret_b64 = getenv("SECURETTY_SERVER_SECRET_KEY");
+    size_t secret_len = 0;
+    if (secret_b64 && sodium_base642bin(serverPrivateKey, sizeof(serverPrivateKey), secret_b64,
+                                        strlen(secret_b64), nullptr, &secret_len, nullptr,
+                                        sodium_base64_VARIANT_ORIGINAL) == 0 &&
+        secret_len == sizeof(serverPrivateKey)) {
+        crypto_scalarmult_base(serverPublicKey, serverPrivateKey);
+    } else {
+        fprintf(stderr, "[CRYPTO] SECURETTY_SERVER_SECRET_KEY is required\n");
+        return 1;
+    }
+    char public_b64[128] = {0};
+    sodium_bin2base64(public_b64, sizeof(public_b64), serverPublicKey,
+                      sizeof(serverPublicKey), sodium_base64_VARIANT_ORIGINAL);
+    printf("[CRYPTO] Set SECURETTY_SERVER_PUBKEY=%s on clients\n", public_b64);
     // if we don't connect to database, chat probably won't work
     {
         time_t rawtime;
@@ -1531,6 +1648,10 @@ int main(void) {
         }
 
         int* client_sock_ptr = malloc(sizeof(int));
+        if (!client_sock_ptr) {
+            close(new_socket);
+            continue;
+        }
         *client_sock_ptr = new_socket;
 
         if (pthread_create(&thread_id, &attr, acceptMessage, client_sock_ptr) == 0) {

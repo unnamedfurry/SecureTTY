@@ -50,7 +50,7 @@ typedef struct {
     long userId;
     char userName[MAX_NAME+1];
     char email[MAX_EMAIL+1];
-    char passwordHash[MAX_PASS];
+    char passwordHash[crypto_pwhash_STRBYTES];
     char avatarUrl[MAX_AVATAR+1];
     char profileDescription[MAX_DESC+1];
 } Config;
@@ -87,6 +87,12 @@ char masterPassword[MAX_PASS+1] = {0};
 unsigned char clientSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
 bool hasSessionKey = false;
 bool sentKeyExchange = false;
+static pthread_mutex_t clientStateMutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void appendPath(char *dst, size_t cap, const char *part) {
+    size_t used = strlen(dst);
+    if (used < cap - 1) snprintf(dst + used, cap - used, "%s", part);
+}
 unsigned char clientPub[crypto_box_PUBLICKEYBYTES];
 unsigned char clientPriv[crypto_box_SECRETKEYBYTES];
 
@@ -172,8 +178,10 @@ bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max
     unsigned char ciphertext[PACKET_SIZE-256];
     size_t nonce_len = 0, ct_len = 0;
 
-    sodium_base642bin(nonce, sizeof(nonce), nonce_b64, strlen(nonce_b64), nullptr, &nonce_len, nullptr, sodium_base64_VARIANT_ORIGINAL);
-    sodium_base642bin(ciphertext, sizeof(ciphertext), ct_b64, strlen(ct_b64), nullptr, &ct_len, nullptr, sodium_base64_VARIANT_ORIGINAL);
+    if (sodium_base642bin(nonce, sizeof(nonce), nonce_b64, strlen(nonce_b64), nullptr, &nonce_len, nullptr, sodium_base64_VARIANT_ORIGINAL) != 0 ||
+        nonce_len != sizeof(nonce) ||
+        sodium_base642bin(ciphertext, sizeof(ciphertext), ct_b64, strlen(ct_b64), nullptr, &ct_len, nullptr, sodium_base64_VARIANT_ORIGINAL) != 0 ||
+        ct_len < crypto_aead_xchacha20poly1305_ietf_ABYTES) return false;
 
     unsigned char decrypted[PACKET_SIZE-256] = {0};
     unsigned long long decrypted_len;
@@ -227,6 +235,7 @@ void* recieveMessage(void* arg) {
                 // regardless of what decrypt/strtok do to fullMessage.
                 memcpy(fullMessage, recvBuf, msgLen);
                 fullMessage[msgLen] = '\0';
+                pthread_mutex_lock(&clientStateMutex);
                 printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
                 printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
 
@@ -241,6 +250,14 @@ void* recieveMessage(void* arg) {
                     printf("[CRYPTO] Received server pubkey, len = %zu\n", len);
 
                     if (len == crypto_box_PUBLICKEYBYTES) {
+                        const char *pinned = getenv("SECURETTY_SERVER_PUBKEY");
+                        char received[128] = {0};
+                        sodium_bin2base64(received, sizeof(received), serverPub, sizeof(serverPub), sodium_base64_VARIANT_ORIGINAL);
+                        if (!pinned || strcmp(pinned, received) != 0) {
+                            printf("[CRYPTO] Server public key does not match SECURETTY_SERVER_PUBKEY\n");
+                            connected = false;
+                            goto next;
+                        }
                         int ret = crypto_box_beforenm(clientSessionKey, serverPub, clientPriv);
                         if (ret == 0) {
                             hasSessionKey = true;
@@ -279,8 +296,8 @@ void* recieveMessage(void* arg) {
                             parts2[cnt2++] = (token2 == NULL || strcmp(token2, "null") == 0 || strcmp(token2, "NULL") == 0) ? "" : token2;
                             token2 = strtok(nullptr, "\x1E");
                         }
-                        strncpy(config.avatarUrl, parts2[4], MAX_AVATAR);
-                        strncpy(config.profileDescription, parts2[5], MAX_DESC);
+                         if (cnt2 > 0) snprintf(config.avatarUrl, sizeof(config.avatarUrl), "%s", parts2[0]);
+                         if (cnt2 > 1) snprintf(config.profileDescription, sizeof(config.profileDescription), "%s", parts2[1]);
                         SaveEncryptedConfig(&config, masterPassword);
                         LoadEncryptedConfig(&config, masterPassword);
                     } else if (strncmp(fullMessage+13, "badformat", 9) == 0) {
@@ -292,8 +309,8 @@ void* recieveMessage(void* arg) {
                             parts2[cnt2++] = (token2 == NULL || strcmp(token2, "null") == 0 || strcmp(token2, "NULL") == 0) ? "" : token2;
                             token2 = strtok(nullptr, "\x1E");
                         }
-                        strncpy(config.avatarUrl, parts2[4], MAX_AVATAR);
-                        strncpy(config.profileDescription, parts2[5], MAX_DESC);
+                         if (cnt2 > 0) snprintf(config.avatarUrl, sizeof(config.avatarUrl), "%s", parts2[0]);
+                         if (cnt2 > 1) snprintf(config.profileDescription, sizeof(config.profileDescription), "%s", parts2[1]);
                         SaveEncryptedConfig(&config, masterPassword);
                         LoadEncryptedConfig(&config, masterPassword);
                     }
@@ -382,7 +399,7 @@ void* recieveMessage(void* arg) {
                     char *dataCopy = strdup(historyStart);
                     if (!dataCopy) goto next;
 
-                    messagesCount = -1;
+                    messagesCount = 0;
                     isUpdatedMessages = true;
                     char *p = dataCopy;
 
@@ -421,7 +438,7 @@ void* recieveMessage(void* arg) {
                                     (messages[messagesCount].senderId == config.userId) ? friendId : config.userId;
 
                                 strncpy(messages[messagesCount].message, q, 2048);
-                                messages[messagesCount].message[2049] = '\0';
+                                messages[messagesCount].message[2048] = '\0';
                             }
 
                         }
@@ -470,6 +487,7 @@ void* recieveMessage(void* arg) {
 
                         // if the chat is opened - adding to messages
                         if (currentFriendId == senderId) {
+                            if (messagesCount < 0) messagesCount = 0;
                             if (messagesCount < 1000000) {
                                 messages[messagesCount].messageId = msgId;
                                 messages[messagesCount].senderId = senderId;
@@ -518,6 +536,10 @@ void* recieveMessage(void* arg) {
                 }
                 else if (strncmp(fullMessage, "updateClient/messages/", 22) == 0) {
                     char *ptr = malloc(sizeof(char)*(strlen(fullMessage)+2));
+                    if (!ptr) {
+                        printf("[UPDATE CLIENT] Out of memory\n");
+                        goto next;
+                    }
                     memcpy(ptr, fullMessage, strlen(fullMessage)+1);
                     int totalNew = 0;
 
@@ -551,7 +573,8 @@ void* recieveMessage(void* arg) {
                         token = strtok(nullptr, "\x1E");
                     }
 
-                    printf("[UPDATE CLIENT] Got %d new messages\n", totalNew);
+                     printf("[UPDATE CLIENT] Got %d new messages\n", totalNew);
+                     free(ptr);
                 }
                 else if (strncmp(fullMessage, "updateClient/friendRequests", 27) == 0) {
                     printf("[FRIEND REQUESTS] Received pending requests\n");
@@ -646,6 +669,8 @@ void* recieveMessage(void* arg) {
                 }
                 next:
 
+                pthread_mutex_unlock(&clientStateMutex);
+
                 // moving the end
                 size_t processed = msgLen + 1; // +1 bc of '\n'
                 printf("[DEBUG] Processed if %lu.\n", processed);
@@ -669,6 +694,8 @@ bool initNetwork(void) {
     // Connect to server
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         printf(cRED "[FATAL | NETWORK] Failed to connect to server\n" RESET);
+        close(sock);
+        sock = -1;
         return false;
     }
     connected=true;
@@ -688,8 +715,12 @@ bool initNetwork(void) {
     char pub_b64[312];
     sodium_bin2base64(pub_b64, sizeof(pub_b64), clientPub, sizeof(clientPub), sodium_base64_VARIANT_ORIGINAL);
     snprintf(packet1, sizeof(packet1), "keyexchange/%s\x1D", pub_b64);
-    ssize_t sent = send(sock, packet1, strlen(packet1), 0);
-    if (sent < 0) {initedNetwork=false; connected = false;}
+    size_t packetLen = strlen(packet1), sent = 0;
+    while (sent < packetLen) {
+        ssize_t n = send(sock, packet1 + sent, packetLen - sent, MSG_NOSIGNAL);
+        if (n <= 0) { initedNetwork=false; connected = false; close(sock); sock = -1; break; }
+        sent += (size_t)n;
+    }
     sentKeyExchange=true;
     return true;
 }
@@ -752,11 +783,18 @@ void sendMessage(const char *message) {
     }
 
     packet[strlen(packet)]='\x1D';
-    if (send(sock, packet, strlen(packet), 0) < 0) {
+    size_t packetLen = strlen(packet), sent = 0;
+    while (sent < packetLen) {
+        ssize_t n = send(sock, packet + sent, packetLen - sent, MSG_NOSIGNAL);
+        if (n <= 0) {
         printf("[NETWORK] Send error\n");
         connected = false;
         initedNetwork=false;
-    } else {
+        return;
+        }
+        sent += (size_t)n;
+    }
+    {
         usleep(5000);
     }
     printf("[SEND] Sent message: %s\n", packet);
@@ -816,17 +854,30 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
     // Reading encrypted data
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f) - sizeof(salt) - sizeof(header);
+    if (file_size <= 0 || file_size > 16384) {
+        fclose(f);
+        return false;
+    }
     fseek(f, sizeof(salt)+sizeof(header), SEEK_SET);
     unsigned char *encrypted = malloc(file_size);
+    if (!encrypted) {
+        fclose(f);
+        return false;
+    }
     fread(encrypted, 1, file_size, f);
     fclose(f);
 
-    unsigned char decrypted[8192] = {0};
+    unsigned char *decrypted = calloc(1, (size_t)file_size + 1);
+    if (!decrypted) {
+        free(encrypted);
+        return false;
+    }
     unsigned long long decrypted_len;
     unsigned char tag;
 
     if (crypto_secretstream_xchacha20poly1305_pull(&state, decrypted, &decrypted_len, &tag, encrypted, file_size, nullptr, 0) !=0) {
         free(encrypted);
+        free(decrypted);
         printf("[LOAD CONFIG FILE] Wrong master-password or corrupted file.\n");
         return false;
     }
@@ -850,7 +901,7 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
             } else if (strcmp(key, "email") == 0) {
                 strncpy(cfg->email, value, MAX_EMAIL);
             } else if (strcmp(key, "passwordHash") == 0) {
-                strncpy(cfg->passwordHash, value, SHA256_DIGEST_LENGTH);
+                snprintf(cfg->passwordHash, sizeof(cfg->passwordHash), "%s", value);
             } else if (strcmp(key, "avatarUrl") == 0) {
                 strncpy(cfg->avatarUrl, value, MAX_AVATAR);
             } else if (strcmp(key, "profileDescription") == 0) {
@@ -859,37 +910,49 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
         }
         line = strtok(nullptr, "\n");
     }
+    free(decrypted);
     return true;
 }
 bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
     unsigned char salt[SALT_SIZE] = {0};
     unsigned char master_key[crypto_secretstream_xchacha20poly1305_KEYBYTES];
     unsigned char header[HEADER_SIZE];
-
-    FILE *f = fopen(CONFIG_FILE, "wb");
-    if (!f) return false;
+    bool existed = FileExists(CONFIG_FILE);
 
     // Generating new salt if file is new
     // and reading existing salt if file is present
-    if (!FileExists(CONFIG_FILE)) {
+    if (!existed) {
         randombytes_buf(salt, sizeof(salt));
-        fwrite(salt, 1, sizeof(salt), f);
     } else {
         FILE *old = fopen(CONFIG_FILE, "rb");
-        fread(salt, 1, sizeof(salt), old);
+        if (!old || fread(salt, 1, sizeof(salt), old) != sizeof(salt)) {
+            if (old) fclose(old);
+            return false;
+        }
         fclose(old);
-        fwrite(salt, 1, sizeof(salt), f);
     }
+
+    char tempPath[sizeof(CONFIG_FILE) + 5];
+    snprintf(tempPath, sizeof(tempPath), "%s.tmp", CONFIG_FILE);
+    FILE *f = fopen(tempPath, "wb");
+    if (!f) return false;
+    fwrite(salt, 1, sizeof(salt), f);
 
     if (!DeriveMasterKey(master_password, master_key, salt)) {
         printf("[SAVE ENCRYPTED CONFIG] Error generating key.\n");
+        fclose(f);
+        unlink(tempPath);
         return false;
     }
 
     // Saving config to regular line
     char temp_config[16384] = {0};
     FILE *tmp = tmpfile();
-    if (!tmp) return false;
+    if (!tmp) {
+        fclose(f);
+        unlink(tempPath);
+        return false;
+    }
 
     fprintf(tmp, "isFirstUsed=%s\n", cfg->isFirstUsed ? "true" : "false");
     fprintf(tmp, "userId=%ld\n", cfg->userId);
@@ -918,6 +981,10 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
 
     fwrite(out_buf, 1, out_len, f);
     fclose(f);
+    if (rename(tempPath, CONFIG_FILE) != 0) {
+        unlink(tempPath);
+        return false;
+    }
 
     printf("[SAVE ENCRYPTED CONFIG] Saved config to file.\n");
 
@@ -982,6 +1049,11 @@ void DrawTextBoxed(Font font, const char *text, Rectangle container, float fontS
 }
 
 // go ask grok idk
+static void appendText(char *dst, size_t cap, const char *src) {
+    size_t used = strlen(dst);
+    if (used < cap - 1) snprintf(dst + used, cap - used, "%s", src);
+}
+
 int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth,
              Font font, float fontSize, float spacing){
     if (!text || !output || maxOutputSize <= 0) return 0;
@@ -995,8 +1067,8 @@ int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth
     while (*p) {
         // skipping \n
         if (*p == '\n') {
-            strcat(output, currentLine);
-            strcat(output, "\n");
+            appendText(output, maxOutputSize, currentLine);
+            appendText(output, maxOutputSize, "\n");
             totalHeight += (int)fontSize + 6;
             currentLine[0] = '\0';
             p++;
@@ -1007,6 +1079,7 @@ int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth
         const char* wordStart = p;
         while (*p && *p != ' ' && *p != '\n') p++;
         int wordLen = (int)(p - wordStart);
+        if (wordLen > 511) wordLen = 511;
 
         char word[512] = {0};
         if (wordLen > 0) {
@@ -1026,8 +1099,8 @@ int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth
         if (size.x > maxLineWidth) {
             // if the solid word is going out of bounds -> we cut it
             if (currentLine[0] != '\0') {
-                strcat(output, currentLine);
-                strcat(output, "\n");
+                appendText(output, maxOutputSize, currentLine);
+                appendText(output, maxOutputSize, "\n");
                 totalHeight += (int)fontSize + 6;
                 currentLine[0] = '\0';
             }
@@ -1042,19 +1115,19 @@ int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth
                     float charWidth = MeasureTextEx(font, temp, fontSize, spacing).x;
 
                     if (accumulatedWidth + charWidth > maxLineWidth && accumulatedWidth > 0) {
-                        strcat(output, currentLine);
-                        strcat(output, "\n");
+                        appendText(output, maxOutputSize, currentLine);
+                        appendText(output, maxOutputSize, "\n");
                         totalHeight += (int)fontSize + 6;
                         currentLine[0] = '\0';
                         accumulatedWidth = 0;
                     }
 
-                    strcat(currentLine, temp);
+                    appendText(currentLine, sizeof(currentLine), temp);
                     accumulatedWidth += charWidth;
                 }
             }
         } else {
-            strcpy(currentLine, testLine);
+            snprintf(currentLine, sizeof(currentLine), "%s", testLine);
         }
 
         if (*p == ' ') p++; // skipping space
@@ -1062,7 +1135,7 @@ int WrapText(const char* text, char* output, int maxOutputSize, int maxLineWidth
 
     // appending last line
     if (currentLine[0] != '\0') {
-        strcat(output, currentLine);
+        appendText(output, maxOutputSize, currentLine);
         totalHeight += (int)fontSize + 6;
     }
 
@@ -1243,7 +1316,7 @@ char* GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColo
     static char lastPath[512] = {0};
     struct dirent **dir;
     if (path == NULL) {printf("\nError: not enough memory for directory listing.\n"); return nullptr;}
-    if (initialized==false) {strncpy(path, "/", 256);}
+    if (initialized==false) { snprintf(path, 512, "/"); }
 
     if (initialized==false) { // allocating memory if called firstly
         for (int i=0; i<256; i++) {rootFolders[i] = malloc(256 * sizeof(char)); if (rootFolders[i] == NULL) {printf("\nError: not enough memory for file listing.\n"); return nullptr;}}
@@ -1288,17 +1361,19 @@ char* GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColo
                     }
                 }
             }
+            for (int i = 0; i < n; i++) free(dir[i]);
+            free(dir);
+            dir = NULL;
         }
     }
 
     readDirFiles=true;
-    free(dir);
     // -------- Left Chunk (Folder List) --------
     {
         // Scroll settings
         float visibleHeight = (float)field2Height;
         float contentHeight2 = (float)rootFoldersAmount * 34.0f;
-        float wheel;
+        float wheel = 0.0f;
         if (CheckCollisionPointRec(GetMousePosition(), (Rectangle){bounds.x+4, bounds.y+82, (float)field2Width, (float)field2Height})) wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
             scrollVelocity -= wheel * 15.0f;
@@ -1337,8 +1412,8 @@ char* GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColo
 
                     // Entering path clicked
                     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                        strncat(path, rootFolders[i], strlen(rootFolders[i]));
-                        strncat(path, "/", 1);
+                        appendPath(path, 512, rootFolders[i]);
+                        appendPath(path, 512, "/");
                         readDirFiles=false;
                         rootFoldersAmount = 0;
                         rootFilesAmount = 0;
@@ -1364,7 +1439,7 @@ char* GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColo
                 int index = pre_last ? (int)(pre_last - path) : -1;
                 path[index+1] = '\0';
             } else if (k==2) {
-                strncpy(path, "/", sizeof(path)-1);
+                snprintf(path, 512, "/");
             }
             readDirFiles=false;
             rootFoldersAmount = 0;
@@ -1411,7 +1486,7 @@ char* GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColo
         // Scroll settings
         float visibleHeight = (float)field3Height;
         float contentHeight2 = (float)rootFilesAmount * 34.0f;
-        float wheel;
+        float wheel = 0.0f;
         if (CheckCollisionPointRec(GetMousePosition(), (Rectangle){bounds.x+(float)field2Width+4, bounds.y+82, (float)field3Width, (float)field3Height})) wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
             scrollVelocity2 -= wheel * 15.0f;
@@ -1469,7 +1544,7 @@ char* GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColo
 
                     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) { selectedOnce++; }
                     if (selectedOnce>=2 && offsetedFileId==i) {
-                        strcat(path, rootFiles[i]->name);
+                        appendPath(path, 512, rootFiles[i]->name);
                         goto exit;
                     } else if (i!=offsetedFileId) {
                         selectedOnce=0;
@@ -1628,6 +1703,7 @@ int main(void) {
     bool loggedIn = false;
 
     while (!WindowShouldClose()) {
+        pthread_mutex_lock(&clientStateMutex);
         float chatContentHeight = 0.0f;
         float friendContentHeight = 0.0f;
         float wheel = GetMouseWheelMove();
@@ -1964,7 +2040,7 @@ int main(void) {
                             printf(cRED "[FATAL]" RESET " Failed to allocate memory for self avatar path, exiting.");
                             exit(6);
                         }
-                        memset(path2, 0, sizeof(path2));
+                         memset(path2, 0, 255);
                     }
                     if (GuiTextBox((Rectangle){1320, 790, 260, 40}, path2, 255, activeField == 7)) {
                         activeField = (activeField == 7) ? -1 : 7;
@@ -1976,7 +2052,7 @@ int main(void) {
                                 printf(cRED "[FATAL]" RESET " Failed to allocate memory for self avatar path, exiting.");
                                 exit(6);
                             }
-                            memset(path2, 0, sizeof(path2));
+                             memset(path2, 0, 255);
                         }
                         if (strlen(path2) > 3) {
                             Image img = LoadImage(path2);
@@ -2043,7 +2119,7 @@ int main(void) {
                                 printf("[SAVE SELF AVATAR] Failed to load image: %s\n", path2);
                             }
                         }
-                        memset(path2, 0, sizeof(path2));
+                         memset(path2, 0, 255);
                     }
                 }
 
@@ -2129,11 +2205,10 @@ int main(void) {
                 }
 
                 // Friend section
-                if (friendsCount++ > 0) {
-                    friendsCount += 1*isUpdatedFriends;
+                if (friendsCount >= 0) {
                     isUpdatedFriends = false;
                     float friendStartY = 90.0f;
-                    for (int i=0; i<friendsCount && friends[i].userId != 0; i++) {
+                    for (int i=0; i<=friendsCount && i<100 && friends[i].userId != 0; i++) {
                         Rectangle friendRect = { 6, friendStartY, 280, 70 };
                         if (CheckCollisionPointRec(GetMousePosition(), friendRect) && isAddingFriend==false && fileSelector==false) {
                             DrawRectangleRec(friendRect, secondary2Color);
@@ -2207,7 +2282,7 @@ int main(void) {
                                 }
 
                                 shortDesc[pos] = '\0';
-                                strcat(shortDesc, "...");
+                                snprintf(shortDesc + strlen(shortDesc), sizeof(shortDesc) - strlen(shortDesc), "...");
                             }
                             DrawTextEx(font, shortDesc, (Vector2){76, friendStartY + 42}, 18, 2, secondaryColor);
                         }
@@ -2294,7 +2369,8 @@ int main(void) {
                         snprintf(parsed, sizeof(parsed), "receive-message/%ld\x1E%ld\x1E%ld\x1E%s", randomId, config.userId, currentFriendId, message);
 
                         sendMessage(parsed);
-                        if (messagesCount < 1000000) {
+                     if (messagesCount < 0) messagesCount = 0;
+                     if (messagesCount < 1000000) {
                             messages[messagesCount].messageId = randomId;
                             messages[messagesCount].senderId = config.userId;
                             messages[messagesCount].receiverId = currentFriendId;
@@ -2540,7 +2616,8 @@ int main(void) {
                             char shortDesc[80];
                             strncpy(shortDesc, pendingFriends[i].profileDescription, 70);
                             shortDesc[70] = '\0';
-                            if (strlen(pendingFriends[i].profileDescription) > 70) strcat(shortDesc, "...");
+                            if (strlen(pendingFriends[i].profileDescription) > 70)
+                                snprintf(shortDesc + strlen(shortDesc), sizeof(shortDesc) - strlen(shortDesc), "...");
                             DrawTextEx(font, shortDesc, (Vector2){1600/2-190 + 70, startY + 42}, 18, 2, secondaryColor);
                         }
 
@@ -2570,6 +2647,7 @@ int main(void) {
         }
         next:
         EndDrawing();
+        pthread_mutex_unlock(&clientStateMutex);
     }
     // Close connection
     close(sock);
