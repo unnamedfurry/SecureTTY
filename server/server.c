@@ -54,7 +54,7 @@ static unsigned char serverPublicKey[crypto_box_PUBLICKEYBYTES];
 static unsigned char serverPrivateKey[crypto_box_SECRETKEYBYTES];
 void handle_signal(int sig) {
     g_shutdown = 1;
-    shutdown(server_fd, SHUT_RDWR); // будит accept()
+    shutdown(server_fd, SHUT_RDWR);
 }
 
 #define MAX_NAME 23
@@ -916,14 +916,14 @@ void* acceptMessage(void *arg) {
                     decoded_len != crypto_box_PUBLICKEYBYTES) {
                         printf("[CRYPTO] Bad public key from client\n");
                         snprintf(response, sizeof(response), "keyexchange/error");
-                        goto onfail;
+                        goto nextMessage;
                 }
 
                 unsigned char *serverPub = serverPublicKey;
                 unsigned char *serverPriv = serverPrivateKey;
                 if (!curr) {
                     curr = malloc(sizeof(ClientSession));
-                    if (!curr) { snprintf(response, sizeof(response), "keyexchange/error"); goto onfail; }
+                    if (!curr) { snprintf(response, sizeof(response), "keyexchange/error"); goto nextMessage; }
                     curr->userId = 0;               // not authenticated yet
                     curr->sock = sock;
                     curr->hasSessionKey = false;
@@ -940,7 +940,7 @@ void* acceptMessage(void *arg) {
                     char pub_b64[128] = {0};
                      sodium_bin2base64(pub_b64, sizeof(pub_b64), serverPub, crypto_box_PUBLICKEYBYTES, sodium_base64_VARIANT_ORIGINAL);
                     snprintf(response, sizeof(response), "keyexchange/myturn/%s", pub_b64);
-                    goto onfail;
+                    goto nextMessage;
                 } else {
                     printf(RED "[CRYPTO] crypto_box_beforenm failed on server\n" RESET);
                 }
@@ -959,7 +959,7 @@ void* acceptMessage(void *arg) {
                 if (curr) curr->hasSessionKey=true;
             }
 
-            if (!curr) goto onfail;
+            if (!curr) goto nextMessage;
 
             if (strcmp(fullMessage, "test/") == 0) {
                 snprintf(response, sizeof(response), "ok");
@@ -976,14 +976,14 @@ void* acceptMessage(void *arg) {
                 }
                 if (count != 4 || parts[3] == nullptr) {
                     snprintf(response, sizeof(response), "receive-message/badformat");
-                    goto onfail;
+                    goto nextMessage;
                 }
                 long messageId = strtol(parts[0], nullptr, 10);
                 long senderId = strtol(parts[1], nullptr, 10);
                 long receiverId = strtol(parts[2], nullptr, 10);
                 if (senderId != curr->userId || receiverId <= 0) {
                     snprintf(response, sizeof(response), "receive-message/unauthorized");
-                    goto onfail;
+                    goto nextMessage;
                 }
                 if (saveMessageToDB(messageId, senderId, receiverId, parts[3])) {
                     printf("[%s][RECEIVE MESSAGE] Message saved: %ld -> %ld\n", buffer, senderId, receiverId);
@@ -1015,7 +1015,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
                 if (curr->hasSessionKey==false) {
                     printf(RED "[%s][SAVE PROFILE]" RESET " %d attempted unsecured save profile access\n", buffer, sock);
-                    goto onfail;
+                    goto nextMessage;
                 }
                 char *parts[6] = {0};
                 int count = 0;
@@ -1030,7 +1030,7 @@ void* acceptMessage(void *arg) {
                     long uid = strtol(parts[0], nullptr, 10);
                     if (uid != curr->userId || !curr->loggedIn) {
                         snprintf(response, sizeof(response), "save-profile/unauthorized");
-                        goto onfail;
+                        goto nextMessage;
                     }
                     printf("[%s][SAVE PROFILE] received for %ld\n", buffer, uid);
                     bool success = saveUserToDB(uid,
@@ -1062,11 +1062,11 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "getFriendsList/", 15) == 0) {
                 if (curr->loggedIn==false || curr->hasSessionKey==false) {
                     printf(RED "[%s][GET FRIENDS LIST]" RESET " %d attempted unauthorized friend list access\n", buffer, sock);
-                    goto onfail;
+                    goto nextMessage;
                 }
                 long userId = strtol(fullMessage + 15, nullptr, 10);
-                if (userId != curr->userId) { snprintf(response, sizeof(response), "getFriendsList/unauthorized"); goto onfail; }
-                if (userId <= 0) goto onfail;
+                if (userId != curr->userId) { snprintf(response, sizeof(response), "getFriendsList/unauthorized"); goto nextMessage; }
+                if (userId <= 0) goto nextMessage;
                 int offset = snprintf(response, sizeof(response), "getFriendsList/");
 
                 // getting relatedUserId
@@ -1105,7 +1105,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
                 if (curr->loggedIn==false || curr->hasSessionKey==false) {
                     printf(RED "[%s][ADD FRIEND]" RESET " %d attempted unauthorized friend addition\n", buffer, sock);
-                    goto onfail;
+                    goto nextMessage;
                 }
                 char *parts[2] = {0};
                 int count = 0;
@@ -1118,7 +1118,7 @@ void* acceptMessage(void *arg) {
                 if (count == 2) {
                     long senderId = strtol(parts[0], nullptr, 10);
                     long receiverId = strtol(parts[1], nullptr, 10);
-                    if (senderId != curr->userId) { snprintf(response, sizeof(response), "addFriend/unauthorized"); goto onfail; }
+                    if (senderId != curr->userId) { snprintf(response, sizeof(response), "addFriend/unauthorized"); goto nextMessage; }
                     printf("[%s][ADD FRIEND] received for %ld -> %ld\n", buffer, senderId, receiverId);
                     if (senderId > 0 && receiverId > 0) {
                         if (sendFriendRequest(senderId, receiverId)) {
@@ -1149,7 +1149,7 @@ void* acceptMessage(void *arg) {
                 if (count == 2) {
                     long receiverId = strtol(parts[0], nullptr, 10);
                     long senderId   = strtol(parts[1], nullptr, 10);
-                    if (receiverId != curr->userId) { snprintf(response, sizeof(response), "acceptFriend/unauthorized"); goto onfail; }
+                    if (receiverId != curr->userId) { snprintf(response, sizeof(response), "acceptFriend/unauthorized"); goto nextMessage; }
 
                     if (acceptFriendRequest(receiverId, senderId)) {
                         // updating both clients
@@ -1165,7 +1165,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "updateClient/", 13) == 0) {
                 if (curr->loggedIn==false || curr->hasSessionKey==false) {
                     printf(RED "[%s][UPDATE CLIENT]" RESET " %d attempted unauthorized client update access\n", buffer, sock);
-                    goto onfail;
+                    goto nextMessage;
                 }
                 long userId = strtol(fullMessage + 13, nullptr, 10);
                 printf("[%s][UPDATE CLIENT] Received for client/user %ld\n", buffer, userId);
@@ -1194,7 +1194,7 @@ void* acceptMessage(void *arg) {
                 }
                 if (count != 3) {
                     printf("[%s][LOGIN] Not enough parameters for login\n", buffer);
-                    goto onfail;
+                    goto nextMessage;
                 }
                 long userId = strtol(parts[0], nullptr, 10);
                 char esc_email[MAX_EMAIL*2 + 10] = {0};
@@ -1252,7 +1252,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
                 if (curr->loggedIn==false || curr->hasSessionKey==false) {
                     printf(RED "[%s][GET CHAT HISTORY]" RESET " %d attempted unauthorized chat history access\n", buffer, sock);
-                    goto onfail;
+                    goto nextMessage;
                 }
                 char *parts[2] = {0};
                 int count = 0;
@@ -1275,10 +1275,10 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "getAvatar/", 10) == 0) {
                 if (curr->loggedIn==false || curr->hasSessionKey==false) {
                     printf(RED "[%s][GET AVATAR]" RESET " %d attempted unauthorized avatar downloading\n", buffer, sock);
-                    goto onfail;
+                    goto nextMessage;
                 }
                 long uid = strtol(fullMessage + 10, nullptr, 10);
-                if (uid <= 0) { snprintf(response, sizeof(response), "getAvatar/badformat"); goto onfail; }
+                if (uid <= 0) { snprintf(response, sizeof(response), "getAvatar/badformat"); goto nextMessage; }
                 printf("[%s][GET AVATAR] requested %ld's avatar\n", buffer, uid);
                 char filepath[256];
                 snprintf(filepath, sizeof(filepath), "avatars/%ld.png", uid);
@@ -1292,14 +1292,14 @@ void* acceptMessage(void *arg) {
                     if (fileSize <= 0 || fileSize > PACKET_SIZE) {
                         fclose(f);
                         snprintf(response, sizeof(response), "getAvatar/error");
-                        goto onfail;
+                        goto nextMessage;
                     }
 
                     unsigned char *pngData = malloc(fileSize * sizeof(unsigned char));
                     if (!pngData) {
                         fclose(f);
                         snprintf(response, sizeof(response), "getAvatar/error");
-                        goto onfail;
+                        goto nextMessage;
                     }
                     memset(pngData, 0, (size_t)fileSize);
                     fread(pngData, 1, fileSize, f);
@@ -1322,7 +1322,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "saveAvatar/", 11) == 0) {
                 if (curr->loggedIn==false || curr->hasSessionKey==false) {
                     printf(RED "[%s][SAVE AVATAR]" RESET " %d attempted unauthorized avatar saving\n", buffer, sock);
-                    goto onfail;
+                    goto nextMessage;
                 }
                 char *ptr = fullMessage + 11;
                 long userId = strtol(ptr, &ptr, 10);
@@ -1331,7 +1331,7 @@ void* acceptMessage(void *arg) {
                     printf("[%s][SAVE AVATAR] Parse error: invalid userId or missing separator\n", buffer);
                     printf("[%s][SAVE AVATAR] Received: %.100s...\n", buffer, fullMessage);
                     snprintf(response, sizeof(response), "saveAvatar/unauthorized");
-                    goto onfail;
+                    goto nextMessage;
                 }
 
                 char *b64_data = ptr + 1; // base64 start
@@ -1345,7 +1345,7 @@ void* acceptMessage(void *arg) {
                 if (!png_data || decoded_len < 500) { // minimal PNG size
                     printf("[%s][SAVE AVATAR] Decode failed or image too small (%d bytes)\n", buffer, decoded_len);
                     free(png_data);
-                    goto onfail;
+                    goto nextMessage;
                 }
 
                 char binary_path[PATH_MAX] = {0};
@@ -1388,13 +1388,13 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "requestPendingFriends/", 22) == 0) {
                 if (curr->loggedIn==false || curr->hasSessionKey==false) {
                     printf(RED "[%s][REQUEST PENDING FRIENDS]" RESET " %d attempted unauthorized friend list access\n", buffer, sock);
-                    goto onfail;
+                    goto nextMessage;
                 }
                  char *ptr = fullMessage + 22;
                  long userId = strtol(ptr, &ptr, 10);
                  if (userId != curr->userId) {
                      snprintf(response, sizeof(response), "requestPendingFriends/unauthorized");
-                     goto onfail;
+                     goto nextMessage;
                  }
                 { // FRIEND REQUESTS
                     int size = PACKET_SIZE;
@@ -1444,7 +1444,7 @@ void* acceptMessage(void *arg) {
                     printf("[%s][GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", buffer, userId, response);
                 }
             }
-            onfail:
+            nextMessage:
             if (strlen(response) > 0) {
                 sendPacket(sock, response, curr);
                 printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Responding for request (sock %d): %s -> %s\n", buffer, id, sock, fullMessage, response);
