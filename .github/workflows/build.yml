@@ -42,8 +42,8 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist/securetty
-          install -m 755 client dist/securetty/client/client
-          install -m 755 server dist/securetty/server/server
+          install -m 755 client/client dist/securetty/client/client
+          install -m 755 server/server dist/securetty/server/server
           install -m 644 README.md LICENSE Pixellari.ttf installer-beta.sh dist/securetty/client/
           tar -C dist -czf securetty-linux-x86_64.tar.gz securetty
 
