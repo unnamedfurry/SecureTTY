@@ -705,6 +705,6 @@ void sendMessage(const char *message) {
     }
 
     // Prevent server flooding
-    usleep(10000);
+    usleep(5000);
     printf("[SEND] Sent message: %s\n", packet);
 }

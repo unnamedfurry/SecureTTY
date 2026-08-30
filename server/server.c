@@ -73,41 +73,27 @@ int main(void) {
     char public_b64[128] = {0};
     sodium_bin2base64(public_b64, sizeof(public_b64), serverPublicKey,
                       sizeof(serverPublicKey), sodium_base64_VARIANT_ORIGINAL);
-    printf("[CRYPTO] Set SECURETTY_SERVER_PUBKEY=%s on clients\n", public_b64);
+    printf("[CRYPTO] Set SECURETTY_SERVER_PUBKEY=\"%s\" on clients\n", public_b64);
     // if we don't connect to database, chat probably won't work
-    {
-        time_t rawtime;
-        struct tm *info;
-        char buffer[80];
-        time(&rawtime);
-        info = localtime(&rawtime);
-        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-        printf("[%s][MYSQL] Connecting ro mysql\n", buffer);
-    }
+
+    time_t rawtime;
+    struct tm *info;
+    char buffer[80];
+    time(&rawtime);
+    info = localtime(&rawtime);
+    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+    printf("[%s][MYSQL] Connecting ro mysql\n", buffer);
+
     conn = mysql_init(nullptr);
 
     if (mysql_real_connect(conn, HOST, MYSQL_USER, MYSQL_PASSWORD, "securetty", 0, nullptr, 0) == NULL) {
     //if (mysql_real_connect(conn, "localhost", "root", "681137", "securetty", 0, nullptr, 0) == NULL) {
-        time_t rawtime;
-        struct tm *info;
-        char buffer[80];
-        time(&rawtime);
-        info = localtime(&rawtime);
-        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
         printf("[%s][MYSQL] Failed to connect to database: %s\n", buffer, mysql_error(conn));
         mysql_close(conn);
         return 0;
     }
 
-    {
-        time_t rawtime;
-        struct tm *info;
-        char buffer[80];
-        time(&rawtime);
-        info = localtime(&rawtime);
-        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
-        printf("[%s][MYSQL] Connected to database successfully\n", buffer);
-    }
+    printf("[%s][MYSQL] Connected to database successfully\n", buffer);
 
     // we also need to initialize tables
     const char *queries[] = {
@@ -148,20 +134,8 @@ int main(void) {
 
     for (int i = 0; i < 3; i++) {
         if (mysql_query(conn, queries[i])) {
-            time_t rawtime;
-            struct tm *info;
-            char buffer[80];
-            time(&rawtime);
-            info = localtime(&rawtime);
-            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
             printf("[%s][MYSQL] Error creating table %d: %s\n", buffer, i, mysql_error(conn));
         } else {
-            time_t rawtime;
-            struct tm *info;
-            char buffer[80];
-            time(&rawtime);
-            info = localtime(&rawtime);
-            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
             printf("[%s][MYSQL] Table %d created successfully\n", buffer, i);
         }
     }
@@ -170,20 +144,8 @@ int main(void) {
 
     for (int i = 0; i < num_queries; i++) {
         if (mysql_query(conn, queries[i])) {
-            time_t rawtime;
-            struct tm *info;
-            char buffer[80];
-            time(&rawtime);
-            info = localtime(&rawtime);
-            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
             printf("[%s][MYSQL] Error creating table %d: %s\n", buffer, i, mysql_error(conn));
         } else {
-            time_t rawtime;
-            struct tm *info;
-            char buffer[80];
-            time(&rawtime);
-            info = localtime(&rawtime);
-            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
             printf("[%s][MYSQL] Table %d created successfully\n", buffer, i);
         }
     }
@@ -202,12 +164,6 @@ int main(void) {
 
     // Start listening
     listen(server_fd, 10);
-    time_t rawtime;
-    struct tm *info;
-    char buffer[80];
-    time(&rawtime);
-    info = localtime(&rawtime);
-    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
     printf("[%s][NETWORK] Server is listening on port %d\n", buffer, port);
 
     pthread_attr_init(&attr);
@@ -220,9 +176,9 @@ int main(void) {
     sa.sa_handler = handle_signal;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGHUP, &sa, NULL);
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+    sigaction(SIGHUP, &sa, nullptr);
 
     while (!g_shutdown) {
         new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
