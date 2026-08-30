@@ -22,54 +22,12 @@
 extern unsigned char* Base64Decode(const char* input, int* out_len);
 extern bool LoadEncryptedConfig(Config *cfg, const char* master_password);
 extern bool SaveEncryptedConfig(Config *cfg, const char* master_password);
+extern bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max_out_size);
+extern bool EncryptPacket(const char* plaintext, char* out_ciphertext, size_t max_out_size);
 
 // Recursive calls
 void sendMessage(const char *message);
 
-// Decrypting received message
-bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max_out_size) {
-    if (strncmp(encrypted_packet, "enc:", 4) != 0) {
-        // Not encrypted
-        strncpy(out_plaintext, encrypted_packet, max_out_size - 1);
-        out_plaintext[max_out_size - 1] = '\0';
-        return true;
-    }
-
-    // Format: enc:nonce_b64:ciphertext_b64
-    char *nonce_b64 = strtok((char*)(encrypted_packet + 4), ":");
-    char *ct_b64 = strtok(nullptr, ":");
-
-    if (!nonce_b64 || !ct_b64) return false;
-
-    unsigned char nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES];
-    unsigned char ciphertext[PACKET_SIZE-256];
-    size_t nonce_len = 0, ct_len = 0;
-
-    // Converting text into binary variables
-    if (sodium_base642bin(nonce, sizeof(nonce), nonce_b64, strlen(nonce_b64), nullptr, &nonce_len, nullptr, sodium_base64_VARIANT_ORIGINAL) != 0 ||
-        nonce_len != sizeof(nonce) ||
-        sodium_base642bin(ciphertext, sizeof(ciphertext), ct_b64, strlen(ct_b64), nullptr, &ct_len, nullptr, sodium_base64_VARIANT_ORIGINAL) != 0 ||
-        ct_len < crypto_aead_xchacha20poly1305_ietf_ABYTES) return false;
-
-    unsigned char decrypted[PACKET_SIZE-256] = {0};
-    unsigned long long decrypted_len;
-    int returnValue;
-
-    // Decrypting packet
-    returnValue = crypto_aead_xchacha20poly1305_ietf_decrypt(decrypted, &decrypted_len,
-            nullptr,
-            ciphertext, ct_len,
-            nullptr, 0, nonce, clientSessionKey);
-
-    if (returnValue != 0) {
-        printf("[DECRYPT] Error decrypting or bad key.\n");
-        return false;
-    }
-
-    strncpy(out_plaintext, (char*)decrypted, max_out_size - 1);
-    out_plaintext[max_out_size - 1] = '\0';
-    return true;
-}
 void* recieveMessage(void* arg) {
     // Large buffers
     char localBuf[BUFFER_SIZE] = {0};
@@ -438,12 +396,15 @@ void* recieveMessage(void* arg) {
                     memset(pendingFriendAvatarArr, 0, sizeof(pendingFriendAvatarArr));
                     hasFriendRequests = false;
 
+                    // Splitting users
                     char *ptr = fullMessage+17;
                     char *saveptr = nullptr;
                     char *token = strtok_r(ptr, "\x1E", &saveptr);
                     int count = 0;
 
                     while (token && count < 100) {
+
+                        // Splitting user data
                         char tokenCopy[1024];
                         strncpy(tokenCopy, token, sizeof(tokenCopy)-1);
                         tokenCopy[sizeof(tokenCopy)-1] = '\0';
@@ -457,6 +418,8 @@ void* recieveMessage(void* arg) {
                         }
 
                         if (parts[0]) {
+
+                            // Add to pending friend requests
                             hasFriendRequests=true;
                             pendingFriends[count].userId = strtol(parts[0], nullptr, 10);
                             if (parts[1]) strncpy(pendingFriends[count].name, parts[1], MAX_NAME);
@@ -470,25 +433,29 @@ void* recieveMessage(void* arg) {
                             count++;
                         }
 
+                        // Next user
                         token = strtok_r(nullptr, "\x1E", &saveptr);
                     }
                 }
                 else if (strncmp(fullMessage, "updateClient/messages/", 22) == 0) {
                     char *ptr = malloc(sizeof(char)*(strlen(fullMessage)+2));
                     if (!ptr) {
-                        printf(" Out of memory\n");
+                        printf(cRED "[UPDATE CLIENT | MESSAGES | FATAL]" RESET " Out of memory\n");
                         goto next;
                     }
                     memcpy(ptr, fullMessage, strlen(fullMessage)+1);
                     int totalNew = 0;
 
-                    // clear old counters
+                    // clear old message counters
                     for (int i = 0; i < 100; i++) {
                         friends[i].newMessageCount = 0;
                     }
 
+                    // Splitting messages
                     char *token = strtok(ptr, "\x1E");
                     while (token) {
+
+                        // Splitting message data
                         char *parts[2] = {0};
                         int c = 0;
                         char *t2 = strtok(token, "\x1F");
@@ -498,9 +465,11 @@ void* recieveMessage(void* arg) {
                         }
 
                         if (c == 2) {
+                            // Adding message to render
                             long senderId = strtol(parts[0], nullptr, 10);
                             int count = atoi(parts[1]);
 
+                            // Display unread messages counter
                             for (int i = 0; i < 100; i++) {
                                 if (friends[i].userId == senderId) {
                                     friends[i].newMessageCount = count;
@@ -509,10 +478,12 @@ void* recieveMessage(void* arg) {
                             }
                             totalNew+=count;
                         }
+
+                        // Next message
                         token = strtok(nullptr, "\x1E");
                     }
 
-                     printf(" Got %d new messages\n", totalNew);
+                     printf("[UPDATE CLIENT | MESSAGES] Got %d new messages\n", totalNew);
                      free(ptr);
                 }
                 else if (strncmp(fullMessage, "updateClient/friendRequests", 27) == 0) {
@@ -522,16 +493,20 @@ void* recieveMessage(void* arg) {
                     memset(pendingFriendAvatarArr, 0, sizeof(pendingFriendAvatarArr));
                     hasFriendRequests = false;
 
+                    // Splitting users
                     char *ptr = fullMessage+28;
                     char *saveptr = nullptr;
                     char *token = strtok_r(ptr, "\x1E", &saveptr);
                     int count = 0;
 
                     while (token && count < 100) {
+
+                        // Avoid editing original buffer
                         char tokenCopy[1024];
                         strncpy(tokenCopy, token, sizeof(tokenCopy)-1);
                         tokenCopy[sizeof(tokenCopy)-1] = '\0';
 
+                        // Splitting user data
                         char *parts[3] = {0};
                         char *sub = strtok(tokenCopy, "\x1F");
                         int p = 0;
@@ -541,6 +516,7 @@ void* recieveMessage(void* arg) {
                         }
 
                         if (parts[0]) {
+                            // Adding friend request
                             hasFriendRequests=true;
                             pendingFriends[count].userId = strtol(parts[0], nullptr, 10);
                             if (parts[1]) strncpy(pendingFriends[count].name, parts[1], MAX_NAME);
@@ -548,6 +524,7 @@ void* recieveMessage(void* arg) {
                             count++;
                         }
 
+                        // Next request
                         token = strtok_r(nullptr, "\x1E", &saveptr);
                     }
 
@@ -559,20 +536,26 @@ void* recieveMessage(void* arg) {
                     char *ptr = fullMessage + 18;
                     long userId = strtol(ptr, &ptr, 10);
 
+                    // Splitting name and file content
                     if (*ptr == '\x1E') {
+
+                        // File content
                         char *b64_start = ptr + 1;
                         char *b64_end = strchr(b64_start, '\x1E');
                         if (b64_end) *b64_end = '\0';
 
+                        // Decoding text
                         int decoded_len = 0;
                         unsigned char* png_data = Base64Decode(b64_start, &decoded_len);
 
+                        // Saving image
                         if (png_data && decoded_len > 1000) {
                             if (!DirectoryExists("avatars")) MakeDirectory("avatars");
 
                             char filepath[128];
                             snprintf(filepath, sizeof(filepath), "avatars/%ld.png", userId);
 
+                            // Write binary to file
                             FILE *f = fopen(filepath, "wb");
                             if (f) {
                                 size_t written = fwrite(png_data, 1, decoded_len, f);
@@ -580,6 +563,7 @@ void* recieveMessage(void* arg) {
                                 printf("[GET AVATAR] Saved %ld.png | Written: %zu / %d bytes\n",
                                    userId, written, decoded_len);
                             }
+
                             free(png_data);
                             requestedAvatarUpdate = true;
                         } else {
@@ -598,14 +582,14 @@ void* recieveMessage(void* arg) {
                     snprintf(req, 33, "getFriendsList/%ld", config.userId);
                     sendMessage(req);
                 }
-                else if (strncmp(fullMessage, "error", 5) == 0) {
-                    char *ptr = fullMessage+6;
-                    if (strcmp(ptr, "lockedThread") == 0) {
-                        serverErrorCode=1;
-                    } else if (strcmp(ptr, "unknownIssue") == 0) {
-                        serverErrorCode=2;
-                    }
-                }
+                // else if (strncmp(fullMessage, "error", 5) == 0) {
+                //     char *ptr = fullMessage+6;
+                //     if (strcmp(ptr, "lockedThread") == 0) {
+                //         serverErrorCode=1;
+                //     } else if (strcmp(ptr, "unknownIssue") == 0) {
+                //         serverErrorCode=2;
+                //     }
+                // }
                 next:
 
                 pthread_mutex_unlock(&clientStateMutex);
@@ -622,25 +606,30 @@ void* recieveMessage(void* arg) {
     return NULL;
 }
 bool initNetwork(void) {
+
     if (initedNetwork) return true;
     if (connected) return true;
+
     // Create socket
     sock = socket(AF_INET, SOCK_STREAM, 0);
+
     // Define server target
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(SERVER_PORT);
     inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr);
+
     // Connect to server
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        printf(cRED "[FATAL | NETWORK] Failed to connect to server\n" RESET);
+        printf(cRED "[FATAL | NETWORK]" RESET " Failed to connect to server\n");
         close(sock);
         sock = -1;
         return false;
     }
     connected=true;
+
     // Create a listener
     if (pthread_create(&thread_id, nullptr, recieveMessage, NULL) != 0) {
-        printf(cRED "[FATAL | NETWORK] Failed to create listener thread\n" RESET);
+        printf(cRED "[FATAL | NETWORK]" RESET " Failed to create listener thread\n");
     }
 
     // Setting up session key
@@ -649,55 +638,26 @@ bool initNetwork(void) {
         exit(5);
     }
     crypto_box_keypair(clientPub, clientPriv);
+
     // Sending keys and awaiting for response
     char packet1[512];
     char pub_b64[312];
     sodium_bin2base64(pub_b64, sizeof(pub_b64), clientPub, sizeof(clientPub), sodium_base64_VARIANT_ORIGINAL);
     snprintf(packet1, sizeof(packet1), "keyexchange/%s\x1D", pub_b64);
     size_t packetLen = strlen(packet1), sent = 0;
+
     while (sent < packetLen) {
         ssize_t n = send(sock, packet1 + sent, packetLen - sent, MSG_NOSIGNAL);
         if (n <= 0) { initedNetwork=false; connected = false; close(sock); sock = -1; break; }
         sent += (size_t)n;
     }
     sentKeyExchange=true;
+
     return true;
 }
-// Encrypting key before sending
-bool EncryptPacket(const char* plaintext, char* out_ciphertext, size_t max_out_size) {
-    if (!hasSessionKey) {
-        // If key isnt set yet - sending as it is
-        strncpy(out_ciphertext, plaintext, max_out_size - 1);
-        out_ciphertext[max_out_size - 1] = '\0';
-        return true;
-    }
 
-    unsigned char nonce[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES];
-    memset(nonce, 0, sizeof(nonce));
-    randombytes_buf(nonce, sizeof(nonce));
-
-    size_t len = strlen(plaintext);
-    unsigned char ciphertext[len + crypto_aead_xchacha20poly1305_ietf_ABYTES + 64];
-    memset(ciphertext, 0, sizeof(ciphertext));
-    unsigned long long ciphertext_len;
-
-    if (crypto_aead_xchacha20poly1305_ietf_encrypt(ciphertext, &ciphertext_len,
-            (const unsigned char*)plaintext, len,
-            nullptr, 0, nullptr, nonce, clientSessionKey) != 0) {
-        return false;
-            }
-
-    // Formatting nonce + ciphertext in base64
-    char nonce_b64[128] = {0};
-    char ct_b64[524160] = {0};
-
-    sodium_bin2base64(nonce_b64, sizeof(nonce_b64), nonce, sizeof(nonce), sodium_base64_VARIANT_ORIGINAL);
-    sodium_bin2base64(ct_b64, sizeof(ct_b64), ciphertext, ciphertext_len, sodium_base64_VARIANT_ORIGINAL);
-
-    snprintf(out_ciphertext, max_out_size, "enc:%s:%s", nonce_b64, ct_b64);
-    return true;
-}
 void sendMessage(const char *message) {
+
     if (!connected || sock <= 0) {
         if (!initNetwork()) return;
     }
@@ -708,33 +668,43 @@ void sendMessage(const char *message) {
     while (!hasSessionKey && connected) {
         usleep(5000);
         waited += 5;
-        if (waited > 5000) { // 5 sec — if the server doesnt respond, dont hang forever
+
+        // 5 sec — if the server doesnt respond, dont hang forever
+        if (waited > 5000) {
             printf(cRED "[NETWORK] Timed out waiting for session key, message dropped: %s\n" RESET, message);
             return;
         }
     }
-    if (!connected) return; // connection dropped while waiting
 
+    // connection dropped while waiting
+    if (!connected) return;
+
+    // Attempting to encrypt
     char packet[PACKET_SIZE+1] = {0};
     if (!EncryptPacket(message, packet, sizeof(packet)-1)) {
         printf("[CRYPTO] Failed to encrypt message.\n");
         return;
     }
 
+    // Sending data
     packet[strlen(packet)]='\x1D';
     size_t packetLen = strlen(packet), sent = 0;
     while (sent < packetLen) {
+
+        // MSG_NOSIGNAL - do not let connection crash
         ssize_t n = send(sock, packet + sent, packetLen - sent, MSG_NOSIGNAL);
+
+        // Server closed connection
         if (n <= 0) {
-        printf("[NETWORK] Send error\n");
-        connected = false;
-        initedNetwork=false;
-        return;
+            printf("[NETWORK] Send error\n");
+            connected = false;
+            initedNetwork=false;
+            return;
         }
         sent += (size_t)n;
     }
-    {
-        usleep(5000);
-    }
+
+    // Prevent server flooding
+    usleep(10000);
     printf("[SEND] Sent message: %s\n", packet);
 }

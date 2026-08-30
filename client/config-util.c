@@ -27,7 +27,10 @@ bool DeriveMasterKey(const char* password, unsigned char* master_key, const unsi
                         crypto_pwhash_MEMLIMIT_MODERATE,
                         crypto_pwhash_ALG_ARGON2ID13) == 0;
 }
+
 bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
+
+    // Reading binary data
     FILE *f = fopen(CONFIG_FILE, "rb");
     if (!f) {
         printf("[LOAD CONFIG FILE] conf.enc not found or corrupted. conf.enc will be recreated.\n");
@@ -38,16 +41,18 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
     unsigned char header[HEADER_SIZE];
     unsigned char master_key[crypto_secretstream_xchacha20poly1305_KEYBYTES];
 
-    // Reading salt and header
+    // Reading salt ...
     if (fread(salt, 1, sizeof(salt), f) != sizeof(salt)) {
         fclose(f);
         return false;
     }
+    // ... and header
     if (fread(header, 1, sizeof(header), f) != sizeof(header)) {
         fclose(f);
         return false;
     }
 
+    // Get master key
     if (!DeriveMasterKey(master_password, master_key, salt)) {
         fclose(f);
         return false;
@@ -75,6 +80,7 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
     fread(encrypted, 1, file_size, f);
     fclose(f);
 
+    // Decrypting variables
     unsigned char *decrypted = calloc(1, (size_t)file_size + 1);
     if (!decrypted) {
         free(encrypted);
@@ -83,6 +89,7 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
     unsigned long long decrypted_len;
     unsigned char tag;
 
+    // Decrypting config
     if (crypto_secretstream_xchacha20poly1305_pull(&state, decrypted, &decrypted_len, &tag, encrypted, file_size, nullptr, 0) !=0) {
         free(encrypted);
         free(decrypted);
@@ -92,6 +99,7 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
 
     free(encrypted);
 
+    // Loading values from config
     char *line = strtok((char*)decrypted, "\n");
     while (line) {
         char *eq = strchr(line, '=');
@@ -118,20 +126,25 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
         }
         line = strtok(nullptr, "\n");
     }
+
     free(decrypted);
     return true;
 }
+
 bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
+
+    // Un-encrypted variables
     unsigned char salt[SALT_SIZE] = {0};
     unsigned char master_key[crypto_secretstream_xchacha20poly1305_KEYBYTES];
     unsigned char header[HEADER_SIZE];
     bool existed = FileExists(CONFIG_FILE);
 
-    // Generating new salt if file is new
-    // and reading existing salt if file is present
+    // Generating new salt in case file is new
     if (!existed) {
         randombytes_buf(salt, sizeof(salt));
     } else {
+
+        // Reading existing salt
         FILE *old = fopen(CONFIG_FILE, "rb");
         if (!old || fread(salt, 1, sizeof(salt), old) != sizeof(salt)) {
             if (old) fclose(old);
@@ -140,12 +153,14 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
         fclose(old);
     }
 
+    // Copying salt to temporary test config
     char tempPath[sizeof(CONFIG_FILE) + 5];
     snprintf(tempPath, sizeof(tempPath), "%s.tmp", CONFIG_FILE);
     FILE *f = fopen(tempPath, "wb");
     if (!f) return false;
     fwrite(salt, 1, sizeof(salt), f);
 
+    // Getting master key from password
     if (!DeriveMasterKey(master_password, master_key, salt)) {
         printf("[SAVE ENCRYPTED CONFIG] Error generating key.\n");
         fclose(f);
@@ -153,7 +168,7 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
         return false;
     }
 
-    // Saving config to regular line
+    // Checking for space
     char temp_config[16384] = {0};
     FILE *tmp = tmpfile();
     if (!tmp) {
@@ -162,6 +177,7 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
         return false;
     }
 
+    // Saving config to regular line
     fprintf(tmp, "isFirstUsed=%s\n", cfg->isFirstUsed ? "true" : "false");
     fprintf(tmp, "userId=%ld\n", cfg->userId);
     fprintf(tmp, "userName=%s\n", cfg->userName);
@@ -170,23 +186,27 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
     fprintf(tmp, "avatarUrl=%s\n", strlen(cfg->avatarUrl)==0 ? "null" : cfg->avatarUrl);
     fprintf(tmp, "profileDescription=%s\n", cfg->profileDescription);
 
+    // Writing and closing file
     fseek(tmp, 0, SEEK_END);
     long size = ftell(tmp);
     fseek(tmp, 0, SEEK_SET);
     fread(temp_config, 1, size, tmp);
     fclose(tmp);
 
+    // Adding header to test file
     crypto_secretstream_xchacha20poly1305_state state;
     crypto_secretstream_xchacha20poly1305_init_push(&state, header, master_key);
-    fwrite(header, 1, sizeof(header), f); // header
+    fwrite(header, 1, sizeof(header), f);
 
     unsigned char out_buf[4096 + 32];
     unsigned long long out_len;
 
+    // Trying to encrypt config
     crypto_secretstream_xchacha20poly1305_push(&state, out_buf, &out_len,
         (unsigned char*)temp_config, strlen(temp_config), nullptr, 0,
         crypto_secretstream_xchacha20poly1305_TAG_FINAL);
 
+    // Moving temp data to config file
     fwrite(out_buf, 1, out_len, f);
     fclose(f);
     if (rename(tempPath, CONFIG_FILE) != 0) {
@@ -196,8 +216,9 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
 
     printf("[SAVE ENCRYPTED CONFIG] Saved config to file.\n");
 
+    // Sending sata to server
     if (profileUpdateCode == -1) {
-        // Sending sata to server
+
         char message[2048] = {0};
         snprintf(message, sizeof(message),
                  "save-profile/%ld\x1E%s\x1E%s\x1E%s\x1E%s\x1E%s",

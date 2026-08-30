@@ -33,8 +33,17 @@ add_executable(client client/client.c
                       client/network-util.c
                       client/shared-variables.h
                       client/config-util.c
-                      client/shared-variables.c)
-add_executable(server server/server.c)
+                      client/shared-variables.c
+                      client/cryptography.c)
+add_executable(server server/server.c
+                      server/accept-client.c
+                      server/cryptography.c
+                      server/client-manager.c
+                      server/shared-variables.h
+                      server/text-util.c
+                      server/client-actions.c
+                      server/network-util.c
+                      server/shared-variables.c)
 # Linking libraries to binaries AUTOMATICALLY
 target_link_libraries(client PRIVATE ${RAYLIB_LIBRARIES} GL m pthread dl rt X11 Xrandr Xinerama Xi Xcursor OpenSSL::SSL OpenSSL::Crypto ${SODIUM_LIBRARIES})
 target_link_libraries(server PRIVATE m pthread OpenSSL::SSL OpenSSL::Crypto ${MYSQL_LIBRARIES} ${SODIUM_LIBRARIES})
