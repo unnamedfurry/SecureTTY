@@ -2990,7 +2990,7 @@ int GuiPasswordBox(Rectangle bounds, char *text, int textSize, bool editMode)
     // Cursor rectangle
     // NOTE: Position X value should be updated
     Rectangle cursor = {
-        textBounds.x + textWidth + GuiGetStyle(DEFAULT, TEXT_SPACING),
+        textBounds.x ,
         textBounds.y + textBounds.height/2 - GuiGetStyle(DEFAULT, TEXT_SIZE),
         2,
         (float)GuiGetStyle(DEFAULT, TEXT_SIZE)*2
@@ -3318,7 +3318,7 @@ int GuiPasswordBox(Rectangle bounds, char *text, int textSize, bool editMode)
                 int textEndWidth = GuiGetTextWidth(text + textIndexOffset);
                 if (GUI_POINTER_POSITION.x >= (textBounds.x + textEndWidth - glyphWidth/2))
                 {
-                    mouseCursor.x = textBounds.x + textEndWidth;
+                    mouseCursor.x = textBounds.x;
                     mouseCursorIndex = textLength;
                 }
 
@@ -3332,7 +3332,7 @@ int GuiPasswordBox(Rectangle bounds, char *text, int textSize, bool editMode)
             else mouseCursor.x = -1;
 
             // Recalculate cursor position.y depending on textBoxCursorIndex
-            cursor.x = bounds.x + GuiGetStyle(TEXTBOX, TEXT_PADDING) + GuiGetTextWidth(text + textIndexOffset) - GuiGetTextWidth(text + textBoxCursorIndex) + GuiGetStyle(DEFAULT, TEXT_SPACING);
+            //cursor.x = bounds.x + GuiGetStyle(TEXTBOX, TEXT_PADDING) + GuiGetTextWidth(text + textIndexOffset) - GuiGetTextWidth(text + textBoxCursorIndex) + GuiGetStyle(DEFAULT, TEXT_SPACING);
             //if (multiline) cursor.y = GetTextLines()
 
             // Finish text editing on ENTER or mouse click outside bounds
@@ -3375,18 +3375,24 @@ int GuiPasswordBox(Rectangle bounds, char *text, int textSize, bool editMode)
 
     // Draw text considering index offset if required
     // NOTE: Text index offset depends on cursor position
+    int cursorOffset = 0;
     for (int i=0; i<textLength; i++) {
-        DrawCircle((int)bounds.x+10, (int)bounds.y-((int)bounds.height/2), 4, GetColor(GuiGetStyle(TEXTBOX, TEXT + (state*3))));
+        cursorOffset=15+15*i;
+        DrawCircle((int)bounds.x+cursorOffset, (int)bounds.y+((int)bounds.height/2), 4, GetColor(GuiGetStyle(TEXTBOX, TEXT + (state*3))));
+        //printf("        Iteration: %d, point offset: %d, position: %d\n", i, cursorOffset, ((int)bounds.x+cursorOffset));
     }
 
     // Draw cursor
     if (editMode && !GuiGetStyle(TEXTBOX, TEXT_READONLY))
     {
         //if (autoCursorMode || ((blinkCursorFrameCounter/40)%2 == 0))
-        GuiDrawRectangle(cursor, 0, BLANK, GetColor(GuiGetStyle(TEXTBOX, BORDER_COLOR_PRESSED)));
+        GuiDrawRectangle((Rectangle){cursor.x+(float)cursorOffset+5, cursor.y, cursor.width, cursor.height},
+               0, BLANK, GetColor(GuiGetStyle(TEXTBOX, BORDER_COLOR_PRESSED)));
+        //printf("        Cursor offset: %d, cursor position: %d, total: %d\n", cursorOffset, (int)cursor.x, (cursorOffset+(int)cursor.x));
+        cursorOffset=0;
 
         // Draw mouse position cursor (if required)
-        if (mouseCursor.x >= 0) GuiDrawRectangle(mouseCursor, 0, BLANK, GetColor(GuiGetStyle(TEXTBOX, BORDER_COLOR_PRESSED)));
+        //if (mouseCursor.x >= 0) GuiDrawRectangle(mouseCursor, 0, BLANK, GetColor(GuiGetStyle(TEXTBOX, BORDER_COLOR_PRESSED)));
     }
     else if (state == STATE_FOCUSED) GuiTooltip(bounds);
     //--------------------------------------------------------------------

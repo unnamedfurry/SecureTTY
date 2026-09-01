@@ -25,6 +25,8 @@ extern bool SaveEncryptedConfig(Config *cfg, const char* master_password);
 extern bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max_out_size);
 extern bool EncryptPacket(const char* plaintext, char* out_ciphertext, size_t max_out_size);
 
+int timeoutConnection = 5000;
+
 // Recursive calls
 void sendMessage(const char *message);
 
@@ -94,16 +96,16 @@ void* recieveMessage(void* arg) {
                     // with standardized size
                     if (len == crypto_box_PUBLICKEYBYTES) {
 
-                        const char *pinned = getenv("SECURETTY_SERVER_PUBKEY");
+                        //const char *pinned = getenv("SECURETTY_SERVER_PUBKEY");
                         char received[128] = {0};
                         sodium_bin2base64(received, sizeof(received), serverPub, sizeof(serverPub), sodium_base64_VARIANT_ORIGINAL);
 
                         // In case key was modified
-                        if (!pinned || strcmp(pinned, received) != 0) {
+                        /*if (!pinned || strcmp(pinned, received) != 0) {
                             printf("[CR] Server public key does not match SECURETTY_SERVER_PUBKEY\n");
                             connected = false;
                             goto next;
-                        }
+                        }*/
 
                         int ret = crypto_box_beforenm(clientSessionKey, serverPub, clientPriv);
 
@@ -619,12 +621,15 @@ bool initNetwork(void) {
     inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr);
 
     // Connect to server
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0 && timeoutConnection==0) {
         printf(cRED "[FATAL | NETWORK]" RESET " Failed to connect to server\n");
         close(sock);
         sock = -1;
+        timeoutConnection=5000;
         return false;
     }
+    timeoutConnection--;
+
     connected=true;
 
     // Create a listener

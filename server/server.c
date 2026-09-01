@@ -59,7 +59,7 @@ int main(void) {
         fprintf(stderr, "[CRYPTO] sodium initialization failed\n");
         return 1;
     }
-    const char *secret_b64 = getenv("SECURETTY_SERVER_SECRET_KEY");
+    /*const char *secret_b64 = getenv("SECURETTY_SERVER_SECRET_KEY");
     size_t secret_len = 0;
     if (secret_b64 && sodium_base642bin(serverPrivateKey, sizeof(serverPrivateKey), secret_b64,
                                         strlen(secret_b64), nullptr, &secret_len, nullptr,
@@ -73,7 +73,8 @@ int main(void) {
     char public_b64[128] = {0};
     sodium_bin2base64(public_b64, sizeof(public_b64), serverPublicKey,
                       sizeof(serverPublicKey), sodium_base64_VARIANT_ORIGINAL);
-    printf("[CRYPTO] Set SECURETTY_SERVER_PUBKEY=\"%s\" on clients\n", public_b64);
+    printf("[CRYPTO] Set SECURETTY_SERVER_PUBKEY=\"%s\" on clients\n", public_b64);*/
+
     // if we don't connect to database, chat probably won't work
 
     time_t rawtime;

@@ -127,8 +127,11 @@ void* acceptMessage(void *arg) {
                 }
 
                 // Assigning key to current user
-                unsigned char *serverPub = serverPublicKey;
-                unsigned char *serverPriv = serverPrivateKey;
+                //unsigned char *serverPub = serverPublicKey;
+                //unsigned char *serverPriv = serverPrivateKey;
+                unsigned char serverPub[crypto_box_PUBLICKEYBYTES] = {0};
+                unsigned char serverPriv[crypto_box_SECRETKEYBYTES] = {0};
+                crypto_box_keypair(serverPub, serverPriv);
                 if (!curr) {
 
                     // Checking for space

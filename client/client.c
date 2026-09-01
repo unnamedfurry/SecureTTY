@@ -57,9 +57,9 @@ float friendContentHeight = 0.0f;
 bool chatAutoScrollAllowed = true;
 bool chatIsDraggingScrollbar = false;
 bool friendIsDraggingScrollbar = false;
+Rectangle sliderBox = {201, 601, 98, 98};
 
 int MasterPasswordState() {
-    Rectangle sliderBox = {201, 601, 98, 98};
     initedNetwork = initNetwork();
 
     DrawTextEx(font, "Мастер-пароль приложения:", (Vector2){480, 100}, 48, 2, mainColor);
@@ -84,7 +84,7 @@ int MasterPasswordState() {
             }
         }
         // Mini Terms Of Service
-        DrawTextEx(font, "пароль сильный и хранится только у меня", (Vector2){400, 632}, 32, 2, secondaryColor);
+        DrawTextEx(font, "пароль сильный и хранится только у меня", (Vector2){470, 632}, 32, 2, secondaryColor);
         DrawRectangleRec(sliderBox, mainColor);
         DrawRectangleLinesEx(sliderBox, 2, mainColor);
         GuiDrawIcon(115, (int)sliderBox.x+16, (int)sliderBox.y+16, 4, secondaryColor);
