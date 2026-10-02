@@ -49,6 +49,7 @@ typedef struct ClientSession {
     bool hasSessionKey;
     bool loggedIn;
     bool closing;
+    bool allowedFileUpload;
     struct ClientSession *next;
 } ClientSession;
 extern ClientSession *activeClients;

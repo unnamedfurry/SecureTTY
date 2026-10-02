@@ -26,6 +26,7 @@ bool requestedAvatarUpdate = false;
 bool hasFriendRequests = false;
 bool isUpdatedMessages = false;
 bool isUpdatedFriends = false;
+bool canUploadFile = false;
 long currentFriendId = 0L;
 int messagesCount = -2;
 int friendsCount = -2;

@@ -296,7 +296,6 @@ void* receiveMessage(void* arg) {
                     char *p = dataCopy;
 
                     while (p && *p && messagesCount < 999999) {
-                        messagesCount++;
                         // locating the end of the block
                         char *record_end = strchr(p, '\x1E');
                         if (record_end) *record_end = '\0';   // temporary cutting
@@ -333,6 +332,7 @@ void* receiveMessage(void* arg) {
                                 messages[messagesCount].message[2048] = '\0';
                             }
 
+                            messagesCount++;
                         }
                         // jumping to next block
                         if (record_end) {
@@ -584,14 +584,13 @@ void* receiveMessage(void* arg) {
                     snprintf(req, 33, "getFriendsList/%ld", config.userId);
                     sendMessage(req);
                 }
-                // else if (strncmp(fullMessage, "error", 5) == 0) {
-                //     char *ptr = fullMessage+6;
-                //     if (strcmp(ptr, "lockedThread") == 0) {
-                //         serverErrorCode=1;
-                //     } else if (strcmp(ptr, "unknownIssue") == 0) {
-                //         serverErrorCode=2;
-                //     }
-                // }
+                else if (strncmp(fullMessage, "check-space/", 12) == 0) {
+                    if (strcmp(fullMessage+12, "allowed") == 0) {
+                        canUploadFile=true;
+                    } else if (strcmp(fullMessage+12, "prohibited") == 0) {
+                        canUploadFile=false;
+                    }
+                }
                 next:
 
                 //pthread_mutex_unlock(&clientStateMutex);

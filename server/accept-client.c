@@ -15,6 +15,7 @@
 #include <sodium/utils.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/statvfs.h>
 
 // Shared variables and methods
 #include "shared-variables.h"
@@ -143,6 +144,7 @@ void* acceptMessage(void *arg) {
                     curr->hasSessionKey = false;
                     curr->loggedIn = false;
                     curr->closing = false;
+                    curr->allowedFileUpload=false;
                     pthread_mutex_lock(&clientsMutex);
                     curr->next = activeClients;
                     activeClients = curr;
@@ -276,7 +278,6 @@ void* acceptMessage(void *arg) {
                     long uid = strtol(parts[0], nullptr, 10);
                     if (uid != curr->userId || !curr->loggedIn) {
                         snprintf(response, sizeof(response), "save-profile/unauthorized");
-                        // TODO не пускает новых пользователей
                         goto nextMessage;
                     }
 
@@ -781,6 +782,28 @@ void* acceptMessage(void *arg) {
                 }
                 pthread_mutex_unlock(&mysql_mutex);
                 printf("[%s][GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", buffer, userId, response);
+            } else if (strncmp(fullMessage, "check-space/", 12) == 0) {
+
+                long requestedSize = strtol(fullMessage+12, nullptr, 10);
+                struct statvfs stat;
+                char *cwd = getcwd(nullptr, 0);
+
+                if (cwd != NULL) {
+                    if (statvfs(cwd, &stat) == 0) {
+                        // f_frsize is the fundamental filesystem block size
+                        // f_bavail is the number of free blocks available to unprivileged users
+                        unsigned long long free_space_bytes = (unsigned long long)stat.f_bavail * stat.f_frsize;
+                        free_space_bytes -= (5ULL * (1024 * 1024 * 1024) + requestedSize);
+
+                        if (free_space_bytes > requestedSize) {
+                            snprintf(response, sizeof(response), "check-space/allowed");
+                            curr->allowedFileUpload = true;
+                        } else {
+                            snprintf(response, sizeof(response), "check-space/prohibited");
+                            curr->allowedFileUpload=false;
+                        }
+                    }
+                }
             }
 
 

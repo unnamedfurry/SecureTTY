@@ -86,6 +86,7 @@ extern bool requestedAvatarUpdate;
 extern bool hasFriendRequests;
 extern bool isUpdatedMessages;
 extern bool isUpdatedFriends;
+extern bool canUploadFile;
 extern long currentFriendId;
 extern int messagesCount;
 extern int friendsCount;

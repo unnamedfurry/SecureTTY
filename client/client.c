@@ -781,6 +781,7 @@ int MainState() {
     GuiSetStyle(DEFAULT, TEXT_SIZE, 40);
     if (GuiButton((Rectangle){301, 839, 60, 60}, "+")) {
         fileSelector=true;
+        // TODO загрузка файлов
     }
     // Send message button
     if (GuiButton((Rectangle){1241, 839, 60, 60}, "^") || IsKeyPressed(KEY_ENTER)) {
@@ -1144,6 +1145,7 @@ int MainState() {
     // Closing current chat
     if (IsKeyPressed(KEY_ESCAPE) && currentFriendId>0 && fileSelector==false && isAddingFriend==false) {
         currentFriendId=0;
+        messagesCount=0;
     }
 
     // Custom gui file selector

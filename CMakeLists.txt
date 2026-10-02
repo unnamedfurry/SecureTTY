@@ -34,7 +34,8 @@ add_executable(client client/client.c
                       client/shared-variables.h
                       client/config-util.c
                       client/shared-variables.c
-                      client/cryptography.c)
+                      client/cryptography.c
+                      client/chat-util.c)
 add_executable(server server/server.c
                       server/accept-client.c
                       server/cryptography.c
