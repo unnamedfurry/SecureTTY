@@ -16,7 +16,7 @@
 extern bool initNetwork(void);
 extern void sendMessage(const char *message);
 extern bool LoadEncryptedConfig(Config *cfg, const char* master_password);
-extern bool SaveEncryptedConfig(Config *cfg, const char* master_password);
+extern bool SaveEncryptedConfig(Config *cfg, const char* master_password, char* path);
 extern void DrawTextBoxed(Font font, const char *text, Rectangle container, float fontSize, float spacing, Color tint);
 extern void DrawWrappedText(const char* text, Vector2 pos, Font font, float fontSize, float spacing, Color color);
 extern char* Base64Encode(const unsigned char* input, int length);
@@ -36,11 +36,18 @@ typedef enum {
 AppState currentState = STATE_MASTER_PASSWORD;
 Font font;
 char *path2 = nullptr;
+char newDesc[1025] = "";
+char message[2049] = "";
+char userId[15] = "";
+char avatarPathInput[512] = {0};
 bool userAgreed = false;
 bool wrongPass = false;
 bool loggedIn = false;
 bool passwordSecretMode = true;
 bool sendsMessage = false;
+bool isAddingFriend = false;
+bool loadedAvatar = false;
+bool fileSelector = false;
 int currentInputField = -1;
 int profilePage = 1;
 int warningTimer = 5000;
@@ -247,7 +254,7 @@ int FirstSetupState() {
 
         // Getting new id from server
         sendMessage("createId/user");
-        // Awaiting for responce
+        // Awaiting for response
         for (int i = 0; i < 2500 && config.userId == 0; i++) {
             usleep(10000);
         }
@@ -268,7 +275,7 @@ int FirstSetupState() {
         if (strlen(config.avatarUrl)==0) strncpy(config.avatarUrl, "null", 4);
 
         // Save and switch to main state
-        SaveEncryptedConfig(&config, masterPassword);
+        SaveEncryptedConfig(&config, masterPassword, nullptr);
         currentState=STATE_MAIN_CHAT;
     }
 
@@ -335,18 +342,9 @@ int FirstSetupState() {
 }
 
 int MainState() {
-    // Local variables
-    char newDesc[1025] = "";
-    char message[2049] = "";
-    char userId[15] = "";
-    char avatarPathInput[512] = {0};
-
-    bool isAddingFriend = false;
-    bool loadedAvatar = false;
-    bool fileSelector = false;
 
     // Loading self avatar
-    if (strlen(config.avatarUrl) != 0 && loadedAvatar==false) {
+    if (strcmp(config.avatarUrl, "null") !=0 && loadedAvatar==false) {
         ssize_t len = readlink("/proc/self/exe", avatarPathInput, 255);
         if (len == -1) {
             printf("[LOAD SELF AVATAR] Readlink /proc/self/exe failed\n");
@@ -423,15 +421,18 @@ int MainState() {
         // Refresh profile button
         GuiSetStyle(DEFAULT, TEXT_SIZE, 24);
         if (GuiButton((Rectangle){1320, 690, 200, 50}, "Обновить")) {
+
+            // Now it refreshes not only
+            // profile data but avatar too
             if (newDesc[0] != 0) {
                 newDesc[1024]='\0';
                 strcpy(config.profileDescription, newDesc);
                 memset(newDesc, 0, sizeof(newDesc));
             }
-            SaveEncryptedConfig(&config, masterPassword);
+            SaveEncryptedConfig(&config, masterPassword, path2);
         }
         // Manual avatar path (will be deprecated in next version)
-        DrawTextEx(font, "Путь к аватарке:", (Vector2){1320, 760}, 20, 2, mainColor);
+        /*DrawTextEx(font, "Путь к аватарке:", (Vector2){1320, 760}, 20, 2, mainColor);
         if (path2 == NULL && CheckCollisionPointRec(GetMousePosition(), (Rectangle){1320, 790, 260, 40})) {
             path2 = malloc(255*sizeof(char));
             if (path2 == NULL) {
@@ -445,87 +446,8 @@ int MainState() {
         }
         // Upload avatar button
         if (GuiButton((Rectangle){1320, 840, 200, 50}, "Загрузить")) {
-            if (path2 == NULL) {
-                path2 = malloc(255*sizeof(char));
-                if (path2 == NULL) {
-                    printf(cRED "[FATAL]" RESET " Failed to allocate memory for self avatar path, exiting.");
-                    free(path2);
-                    path2=nullptr;
-                    exit(6);
-                }
-                memset(path2, 0, 255);
-            }
-            // Checking if path contains atleast
-            // one symbol before file extension
-            if (strlen(path2) > 5) {
-                Image img = LoadImage(path2);
 
-                if (img.data != NULL) {
-                    // square 128 by 128
-                    int side = (img.width < img.height) ? img.width : img.height;   // taking smallest side
-
-                    // crop to square
-                    Rectangle cropRect = {
-                        (float)(img.width - side) / 2.0f,      // x
-                        (float)(img.height - side) / 2.0f,     // y
-                        (float)side,                           // width
-                        (float)side                            // height
-                    };
-
-                    ImageCrop(&img, cropRect);
-                    ImageResize(&img, 128, 128);
-
-                    // saving near config file
-                    const char *savePath = TextFormat("avatars/%ld.png", config.userId);
-
-                    // in case folder doesnt exist
-                    system("mkdir -p avatars");
-
-                    if (ExportImage(img, savePath)) {
-                        printf("[SAVE SELF AVATAR] Avatar was cropped and saved: %s\n", savePath);
-
-                        // updating config
-                        snprintf(config.avatarUrl, MAX_AVATAR, "avatars/%ld.png", config.userId);
-
-                        // refreshing texture
-                        if (userAvatarTexture.id != 0) UnloadTexture(userAvatarTexture);
-                        userAvatarTexture = LoadTextureFromImage(img);
-
-                        SaveEncryptedConfig(&config, masterPassword);        // save and pull to server
-
-                        // Uploading avatar to server
-                        // TODO: перенести загрузку в обновление профиля
-                        FILE *f = fopen(savePath, "rb");
-                        if (f) {
-                            fseek(f, 0, SEEK_END);
-                            int fileSize = (int)ftell(f);
-                            fseek(f, 0, SEEK_SET);
-
-                            unsigned char *pngData = malloc(fileSize);
-                            fread(pngData, 1, fileSize, f);
-                            fclose(f);
-
-                            char *b64 = Base64Encode(pngData, fileSize);
-                            free(pngData);
-
-                            if (b64) {
-                                char response1[PACKET_SIZE];
-                                snprintf(response1, sizeof(response1), "saveAvatar/%ld\x1E%s", config.userId, b64);
-                                sendMessage(response1);
-                                free(b64);
-                            }
-                        }
-                    } else {
-                        printf("[SAVE SELF AVATAR] Failed to save avatar\n");
-                    }
-
-                    UnloadImage(img);
-                } else {
-                    printf("[SAVE SELF AVATAR] Failed to load image: %s\n", path2);
-                }
-            }
-            memset(path2, 0, 255);
-        }
+        }*/
     }
 
     // Profile status code informer
@@ -533,7 +455,7 @@ int MainState() {
         // Successfully updated
 
         if (warningTimer > 1) {
-            Rectangle warningRec = {1352, 16, 232, 40};
+            Rectangle warningRec = {1332, 16, 252, 40};
             Color accentPlateColor = {79, 255, 79, 255};
             Color backgroundPlateColor = {157, 255, 157, 255};
 
@@ -547,7 +469,7 @@ int MainState() {
                     profileUpdateCode=-1;
                 }
             }
-            DrawTextEx(font, "Успешно обновлен", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+            DrawTextEx(font, "Успешно обновлен", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, GREEN);
             warningTimer-=1;
         } else {
             // Hiding alert automatically

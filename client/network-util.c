@@ -30,7 +30,7 @@ int timeoutConnection = 5000;
 // Recursive calls
 void sendMessage(const char *message);
 
-void* recieveMessage(void* arg) {
+void* receiveMessage(void* arg) {
     // Large buffers
     char localBuf[BUFFER_SIZE] = {0};
     char fullMessage[PACKET_SIZE] = {0};
@@ -76,9 +76,7 @@ void* recieveMessage(void* arg) {
                 memcpy(fullMessage, recvBuf, msgLen);
                 fullMessage[msgLen] = '\0';
 
-                pthread_mutex_lock(&clientStateMutex);
-                printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
-                printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
+                //pthread_mutex_lock(&clientStateMutex);
 
                 // Get key and establish connection
                 if (strncmp(fullMessage, "keyexchange/myturn/", 19) == 0 && hasSessionKey==false) {
@@ -134,6 +132,8 @@ void* recieveMessage(void* arg) {
                     }
                 }
 
+                printf("[RECEIVE MESSAGE] Got %d bytes from server\n", totalReceived);
+                printf("[RECEIVE MESSAGE] Server said (full message): %s\n", fullMessage);
 
                 if (strncmp(fullMessage, "save-profile/", 13) == 0) {
 
@@ -594,7 +594,7 @@ void* recieveMessage(void* arg) {
                 // }
                 next:
 
-                pthread_mutex_unlock(&clientStateMutex);
+                //pthread_mutex_unlock(&clientStateMutex);
 
                 // moving the end
                 size_t processed = msgLen + 1; // +1 bc of '\n'
@@ -633,7 +633,7 @@ bool initNetwork(void) {
     connected=true;
 
     // Create a listener
-    if (pthread_create(&thread_id, nullptr, recieveMessage, NULL) != 0) {
+    if (pthread_create(&thread_id, nullptr, receiveMessage, NULL) != 0) {
         printf(cRED "[FATAL | NETWORK]" RESET " Failed to create listener thread\n");
     }
 
@@ -711,5 +711,6 @@ void sendMessage(const char *message) {
 
     // Prevent server flooding
     usleep(5000);
-    printf("[SEND] Sent message: %s\n", packet);
+    printf("[SEND] Sent message: %s\n", message);
+    printf("[SEND] Sent message (encrypted): %s\n", packet);
 }

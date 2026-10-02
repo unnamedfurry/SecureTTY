@@ -15,6 +15,7 @@
 #include "shared-variables.h"
 
 extern void sendMessage(const char *message);
+extern char* Base64Encode(const unsigned char* input, int length);
 
 // Generating master-key from password (Argon2id)
 bool DeriveMasterKey(const char* password, unsigned char* master_key, const unsigned char* salt) {
@@ -131,7 +132,7 @@ bool LoadEncryptedConfig(Config *cfg, const char* master_password) {
     return true;
 }
 
-bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
+bool SaveEncryptedConfig(Config *cfg, const char* master_password, char* path2) {
 
     // Un-encrypted variables
     unsigned char salt[SALT_SIZE] = {0};
@@ -232,5 +233,91 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password) {
         printf("[SAVE ENCRYPTED CONFIG] Sent data to server.\n");
         sendMessage(message);
     }
+
+    // Updating avatar
+    if (path2 == NULL) {
+        /*path2 = malloc(255*sizeof(char));
+        if (path2 == NULL) {
+            printf(cRED "[FATAL]" RESET " Failed to allocate memory for self avatar path, exiting.");
+            free(path2);
+            path2=nullptr;
+            exit(6);
+        }
+        memset(path2, 0, 255);*/
+
+        // Now when we get pointer from external method,
+        // we shouldn't check or update it to not break
+        // existing avatar
+        return true;
+    }
+    // Checking if path contains atleast
+    // one symbol before file extension
+    if (strlen(path2) > 5) {
+        Image img = LoadImage(path2);
+
+        if (img.data != NULL) {
+            // square 128 by 128
+            int side = (img.width < img.height) ? img.width : img.height;   // taking smallest side
+
+            // crop to square
+            Rectangle cropRect = {
+                (float)(img.width - side) / 2.0f,      // x
+                (float)(img.height - side) / 2.0f,     // y
+                (float)side,                           // width
+                (float)side                            // height
+            };
+
+            ImageCrop(&img, cropRect);
+            ImageResize(&img, 128, 128);
+
+            // saving near config file
+            const char *savePath = TextFormat("avatars/%ld.png", config.userId);
+
+            // in case folder doesnt exist
+            system("mkdir -p avatars");
+
+            if (ExportImage(img, savePath)) {
+                printf("[SAVE SELF AVATAR] Avatar was cropped and saved: %s\n", savePath);
+
+                // updating config
+                snprintf(config.avatarUrl, MAX_AVATAR, "avatars/%ld.png", config.userId);
+
+                // refreshing texture
+                if (userAvatarTexture.id != 0) UnloadTexture(userAvatarTexture);
+                userAvatarTexture = LoadTextureFromImage(img);
+
+                // Uploading avatar to server
+                FILE *f2 = fopen(savePath, "rb");
+                if (f2) {
+                    fseek(f2, 0, SEEK_END);
+                    int fileSize = (int)ftell(f2);
+                    fseek(f2, 0, SEEK_SET);
+
+                    unsigned char *pngData = malloc(fileSize);
+                    fread(pngData, 1, fileSize, f2);
+                    fclose(f2);
+
+                    char *b64 = Base64Encode(pngData, fileSize);
+                    free(pngData);
+
+                    if (b64) {
+                        char response1[PACKET_SIZE];
+                        snprintf(response1, sizeof(response1), "saveAvatar/%ld\x1E%s", config.userId, b64);
+                        sendMessage(response1);
+                        free(b64);
+                    }
+                }
+            } else {
+                printf("[SAVE SELF AVATAR] Failed to save avatar\n");
+            }
+
+            UnloadImage(img);
+        } else {
+            printf("[SAVE SELF AVATAR] Failed to load image: %s\n", path2);
+        }
+    }
+    memset(path2, 0, 255);
+    path2=nullptr;
+
     return true;
 }

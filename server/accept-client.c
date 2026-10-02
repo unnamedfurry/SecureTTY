@@ -106,7 +106,6 @@ void* acceptMessage(void *arg) {
                 }
                 pthread_mutex_unlock(&clientsMutex);
             }
-            printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Client said (full message, %zu bytes): %s\n", buffer, id, msgLen, fullMessage);
 
             // Key exchanging
             if (strncmp(fullMessage, "keyexchange/", 12) == 0) {
@@ -179,6 +178,8 @@ void* acceptMessage(void *arg) {
                 fullMessage[dlen] = '\0';
                 if (curr) curr->hasSessionKey=true;
             }
+
+            printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Client said (full message, %zu bytes): %s\n", buffer, id, msgLen, fullMessage);
 
             if (!curr) goto nextMessage;
 
@@ -275,6 +276,7 @@ void* acceptMessage(void *arg) {
                     long uid = strtol(parts[0], nullptr, 10);
                     if (uid != curr->userId || !curr->loggedIn) {
                         snprintf(response, sizeof(response), "save-profile/unauthorized");
+                        // TODO не пускает новых пользователей
                         goto nextMessage;
                     }
 
