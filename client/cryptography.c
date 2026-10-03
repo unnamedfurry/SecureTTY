@@ -52,7 +52,7 @@ bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max
     return true;
 }
 
-// Encrypting key before sending
+// Encrypting message before sending
 bool EncryptPacket(const char* plaintext, char* out_ciphertext, size_t max_out_size) {
 
     if (!hasSessionKey) {
@@ -89,5 +89,43 @@ bool EncryptPacket(const char* plaintext, char* out_ciphertext, size_t max_out_s
     sodium_bin2base64(ct_b64, sizeof(ct_b64), ciphertext, ciphertext_len, sodium_base64_VARIANT_ORIGINAL);
 
     snprintf(out_ciphertext, max_out_size, "enc:%s:%s", nonce_b64, ct_b64);
+    return true;
+}
+
+// Пишет в out: "enc:" + nonce(24) + ciphertext(len + 16).
+// Возвращает длину пакета через out_len. Это НЕ C-строка!
+bool EncryptPacketRaw(unsigned char* plaintext, unsigned char* out,
+                      size_t max_out_size, size_t* out_len) {
+    const size_t len = strlen(plaintext);
+
+    if (!hasSessionKey) {
+        // Key isnt available yet - send as it is
+        if (len + 1 > max_out_size) return false;
+        memcpy(out, plaintext, len + 1);
+        *out_len = len;
+        return true;
+    }
+
+    const size_t prefix_len = 4; // "enc:"
+    const size_t nonce_len  = crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
+    const size_t needed = prefix_len + nonce_len + len
+                        + crypto_aead_xchacha20poly1305_ietf_ABYTES;
+    if (needed > max_out_size) return false;
+
+    memcpy(out, "enc:", prefix_len);
+
+    unsigned char* nonce = out + prefix_len;
+    randombytes_buf(nonce, nonce_len);
+
+    // Encrypting directly into output buffer, without mid-buffers
+    unsigned long long ciphertext_len = 0;
+    if (crypto_aead_xchacha20poly1305_ietf_encrypt(
+            nonce + nonce_len, &ciphertext_len,
+            (const unsigned char*)plaintext, len,
+            nullptr, 0, nullptr, nonce, clientSessionKey) != 0) {
+        return false;
+            }
+
+    *out_len = prefix_len + nonce_len + (size_t)ciphertext_len;
     return true;
 }

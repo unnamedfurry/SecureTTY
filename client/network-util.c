@@ -24,6 +24,8 @@ extern bool LoadEncryptedConfig(Config *cfg, const char* master_password);
 extern bool SaveEncryptedConfig(Config *cfg, const char* master_password);
 extern bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max_out_size);
 extern bool EncryptPacket(const char* plaintext, char* out_ciphertext, size_t max_out_size);
+extern bool EncryptPacketRaw(unsigned char* plaintext, unsigned char* out,
+                             size_t max_out_size, size_t* out_len);
 
 int timeoutConnection = 5000;
 
@@ -712,4 +714,60 @@ void sendMessage(const char *message) {
     usleep(5000);
     printf("[SEND] Sent message: %s\n", message);
     printf("[SEND] Sent message (encrypted): %s\n", packet);
+}
+
+bool sendBinaryMessage(unsigned char *data, uint32_t size) {
+
+    if (!connected || sock <= 0) {
+        if (!initNetwork()) return false;
+    }
+
+    // until the key is agreed upon, block all outgoing messages except the key exchange itself
+    // (the key exchange is sent directly from initNetwork(), not via sendMessage)
+    int waited = 0;
+    while (!hasSessionKey && connected) {
+        usleep(5000);
+        waited += 5;
+
+        // 5 sec — if the server doesnt respond, dont hang forever
+        if (waited > 5000) {
+            printf(cRED "[NETWORK] Timed out waiting for session key, message dropped: %p\n" RESET, data);
+            return false;
+        }
+    }
+
+    // connection dropped while waiting
+    if (!connected) return false;
+
+    const size_t overhead = 4 + 1 + 24 + 16;
+    unsigned char *buf = malloc(size + overhead);
+    if (!buf) return false;
+
+    size_t pkt_len = 0;
+    if (!EncryptPacketRaw(data, buf + 4, size + overhead - 4, &pkt_len)) {
+        printf("[CRYPTO] Failed to encrypt message.\n");
+        free(buf);
+        return false;
+    }
+
+    uint32_t be = htonl((uint32_t)pkt_len);
+    memcpy(buf, &be, 4);
+
+    size_t total = 4 + pkt_len, sent = 0;
+    while (sent < total) {
+        ssize_t n = send(sock, buf + sent, total - sent, MSG_NOSIGNAL);
+        if (n <= 0) {
+            printf("[NETWORK] Send error\n");
+            connected = false;
+            initedNetwork = false;
+            free(buf);
+            return false;
+        }
+        sent += (size_t)n;
+    }
+
+    free(buf);
+    usleep(5000);
+    printf("[SEND] Sent binary packet: %zu bytes (encrypted: %zu)\n", size, total);
+    return true;
 }

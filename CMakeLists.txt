@@ -49,8 +49,8 @@ add_executable(server server/server.c
 target_link_libraries(client PRIVATE ${RAYLIB_LIBRARIES} GL m pthread dl rt X11 Xrandr Xinerama Xi Xcursor OpenSSL::SSL OpenSSL::Crypto ${SODIUM_LIBRARIES})
 target_link_libraries(server PRIVATE m pthread OpenSSL::SSL OpenSSL::Crypto ${MYSQL_LIBRARIES} ${SODIUM_LIBRARIES})
 # Linking libraries to binaries MANUALLY
-target_include_directories(client PRIVATE ${CMAKE_SOURCE_DIR}/build_include ${RAYLIB_INCLUDE_DIRS} ${SODIUM_INCLUDE_DIRS})
-target_include_directories(server PRIVATE ${MYSQL_INCLUDE_DIRS} ${SODIUM_INCLUDE_DIRS})
+target_include_directories(client PRIVATE ${CMAKE_SOURCE_DIR}/client_build_include ${RAYLIB_INCLUDE_DIRS} ${SODIUM_INCLUDE_DIRS})
+target_include_directories(server PRIVATE ${CMAKE_SOURCE_DIR}/server_build_include ${MYSQL_INCLUDE_DIRS} ${SODIUM_INCLUDE_DIRS})
 # Sort binaries by folders
 set_target_properties(client PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/client")
 set_target_properties(server PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/server")

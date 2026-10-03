@@ -25,6 +25,7 @@ extern int WrapText(const char* text, char* output, int maxOutputSize, int maxLi
                     Font font, float fontSize, float spacing);
 extern float clamp(float val, float min, float max);
 extern char* GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColor, Color secondaryColor, Color textColor);
+extern int UploadFile(char* filePath);
 
 
 // GLOBAL VARIABLES
@@ -781,7 +782,7 @@ int MainState() {
     GuiSetStyle(DEFAULT, TEXT_SIZE, 40);
     if (GuiButton((Rectangle){301, 839, 60, 60}, "+")) {
         fileSelector=true;
-        // TODO загрузка файлов
+        if (path2 != NULL) UploadFile(path2);
     }
     // Send message button
     if (GuiButton((Rectangle){1241, 839, 60, 60}, "^") || IsKeyPressed(KEY_ENTER)) {

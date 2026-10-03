@@ -10,6 +10,7 @@
 #include <openssl/types.h>
 
 #include "raylib.h"
+#include "blake3.h"
 
 static void appendText(char *dst, size_t cap, const char *src) {
     size_t used = strlen(dst);
@@ -210,4 +211,27 @@ unsigned char* Base64Decode(const char* input, int* out_len) {
         return nullptr;
     }
     return output;
+}
+
+void bytes_to_hex_string(const uint8_t *hash_bytes, char *output_buffer) {
+    for (int i = 0; i < BLAKE3_OUT_LEN; i++) {
+        // %02x converts 1 byte into 2 hexadecimal characters (e.g., 15 -> "0f")
+        // Writing occurs at offset i * 2 in your buffer
+        sprintf(output_buffer + (i * 2), "%02x", hash_bytes[i]);
+    }
+    // Make sure to null-terminate the string so that functions like printf or strlen work correctly
+    output_buffer[BLAKE3_OUT_LEN * 2] = '\0';
+}
+
+void get_blake3_hash(const char *input, size_t input_len, uint8_t output[BLAKE3_OUT_LEN]) {
+    blake3_hasher hasher;
+
+    // Initializing hasher
+    blake3_hasher_init(&hasher);
+
+    // Transmit data (size strictly in bytes; suitable for binary packets)
+    blake3_hasher_update(&hasher, input, input_len);
+
+    // Export the final hash
+    blake3_hasher_finalize(&hasher, output, BLAKE3_OUT_LEN);
 }
