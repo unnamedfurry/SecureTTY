@@ -18,6 +18,8 @@
 #include <sys/statvfs.h>
 
 // Shared variables and methods
+#include <errno.h>
+
 #include "shared-variables.h"
 extern void registerClient(long userId, int sock);
 extern void unregisterClient(ClientSession *curr);
@@ -48,7 +50,8 @@ void* acceptMessage(void *arg) {
     char fullMessage[PACKET_SIZE] = {0}; // working copy of a SINGLE message — it is safe to perform decrypt and strtok on it
     int totalReceived = 0;
     pthread_t id = pthread_self();
-    ClientSession *curr = nullptr;
+    ClientSession *currC = nullptr;
+    FileUpload *currF = nullptr;
 
     // Network listener
     while (1) {
@@ -94,18 +97,32 @@ void* acceptMessage(void *arg) {
             fullMessage[msgLen] = '\0';
             finishedResponse = false;
             unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+            long currentUserId = 0L;
             {
                 // Finding and assigning current client
                 pthread_mutex_lock(&clientsMutex);
                 ClientSession *curr2 = activeClients;
                 while (curr2) {
                     if (curr2->sock == sock) {
-                        curr = curr2;
+                        currC = curr2;
+                        currentUserId = curr2->userId;
                         memcpy(serverSessionKey, curr2->serverSessionKey, sizeof(curr2->serverSessionKey));
                     }
                     curr2 = curr2->next;
                 }
                 pthread_mutex_unlock(&clientsMutex);
+            }
+            {
+                // Finding and assigning current file upload
+                pthread_mutex_lock(&filesMutex);
+                FileUpload *curr2 = activeUploads;
+                while (curr2) {
+                    if (curr2->userId == currentUserId) {
+                        currF = curr2;
+                    }
+                    curr2 = curr2->next;
+                }
+                pthread_mutex_unlock(&filesMutex);
             }
 
             // Key exchanging
@@ -132,28 +149,27 @@ void* acceptMessage(void *arg) {
                 unsigned char serverPub[crypto_box_PUBLICKEYBYTES] = {0};
                 unsigned char serverPriv[crypto_box_SECRETKEYBYTES] = {0};
                 crypto_box_keypair(serverPub, serverPriv);
-                if (!curr) {
+                if (!currC) {
 
                     // Checking for space
-                    curr = malloc(sizeof(ClientSession));
-                    if (!curr) { snprintf(response, sizeof(response), "keyexchange/error"); goto nextMessage; }
+                    currC = malloc(sizeof(ClientSession));
+                    if (!currC) { snprintf(response, sizeof(response), "keyexchange/error"); goto nextMessage; }
 
                     // Creating new user
-                    curr->userId = 0;               // not authenticated yet
-                    curr->sock = sock;
-                    curr->hasSessionKey = false;
-                    curr->loggedIn = false;
-                    curr->closing = false;
-                    curr->allowedFileUpload=false;
+                    currC->userId = 0;               // not authenticated yet
+                    currC->sock = sock;
+                    currC->hasSessionKey = false;
+                    currC->loggedIn = false;
+                    currC->closing = false;
                     pthread_mutex_lock(&clientsMutex);
-                    curr->next = activeClients;
-                    activeClients = curr;
+                    currC->next = activeClients;
+                    activeClients = currC;
                     pthread_mutex_unlock(&clientsMutex);
                 }
 
                 // Creating a pair of keys
-                if (crypto_box_beforenm(curr->serverSessionKey, clientPubKey, serverPriv) == 0) {
-                    printf("[CRYPTO] Server session key: %p\n", (void*)curr->serverSessionKey);
+                if (crypto_box_beforenm(currC->serverSessionKey, clientPubKey, serverPriv) == 0) {
+                    printf("[CRYPTO] Server session key: %p\n", (void*)currC->serverSessionKey);
 
                     // Sending keys to client
                     char pub_b64[128] = {0};
@@ -178,12 +194,12 @@ void* acceptMessage(void *arg) {
                 if (dlen >= sizeof(fullMessage)) dlen = sizeof(fullMessage) - 1;
                 memcpy(fullMessage, decrypted, dlen);
                 fullMessage[dlen] = '\0';
-                if (curr) curr->hasSessionKey=true;
+                if (currC) currC->hasSessionKey=true;
             }
 
             printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Client said (full message, %zu bytes): %s\n", buffer, id, msgLen, fullMessage);
 
-            if (!curr) goto nextMessage;
+            if (!currC) goto nextMessage;
 
             if (strcmp(fullMessage, "test/") == 0) {
                 snprintf(response, sizeof(response), "ok");
@@ -212,7 +228,7 @@ void* acceptMessage(void *arg) {
                 long receiverId = strtol(parts[2], nullptr, 10);
 
                 // Checking for authorization
-                if (senderId != curr->userId || receiverId <= 0) {
+                if (senderId != currC->userId || receiverId <= 0) {
                     snprintf(response, sizeof(response), "receive-message/unauthorized");
                     goto nextMessage;
                 }
@@ -225,7 +241,7 @@ void* acceptMessage(void *arg) {
                     char pushPacket[BUFFER_SIZE];
                     snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s\n", messageId, senderId, parts[3], "now");
 
-                    if (!pushToUser(receiverId, pushPacket, curr)) {
+                    if (!pushToUser(receiverId, pushPacket, currC)) {
                         printf("[%s][RECEIVE MESSAGE] Receiver %ld is offline, message will be saved to DB\n", buffer, receiverId);
                     }
                 } else {
@@ -256,7 +272,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "save-profile/", 13) == 0) {
 
                 // Checking secure channel status
-                if (!curr->hasSessionKey) {
+                if (!currC->hasSessionKey) {
                     printf(RED "[%s][SAVE PROFILE]" RESET " %d attempted unsecured save profile access\n", buffer, sock);
                     goto nextMessage;
                 }
@@ -276,7 +292,7 @@ void* acceptMessage(void *arg) {
 
                     // Checking for authorization
                     long uid = strtol(parts[0], nullptr, 10);
-                    if (uid != curr->userId || !curr->loggedIn) {
+                    if (uid != currC->userId || !currC->loggedIn) {
                         snprintf(response, sizeof(response), "save-profile/unauthorized");
                         goto nextMessage;
                     }
@@ -316,14 +332,14 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "getFriendsList/", 15) == 0) {
 
                 // Checking for secured channel
-                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                if (currC->loggedIn==false || currC->hasSessionKey==false) {
                     printf(RED "[%s][GET FRIENDS LIST]" RESET " %d attempted unauthorized friend list access\n", buffer, sock);
                     goto nextMessage;
                 }
 
                 // Checking for authorization
                 long userId = strtol(fullMessage + 15, nullptr, 10);
-                if (userId != curr->userId) { snprintf(response, sizeof(response), "getFriendsList/unauthorized"); goto nextMessage; }
+                if (userId != currC->userId) { snprintf(response, sizeof(response), "getFriendsList/unauthorized"); goto nextMessage; }
                 if (userId <= 0) goto nextMessage;
                 int offset = snprintf(response, sizeof(response), "getFriendsList/");
 
@@ -365,7 +381,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "addFriend/", 10) == 0) {
 
                 // Checking for secured channel
-                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                if (currC->loggedIn==false || currC->hasSessionKey==false) {
                     printf(RED "[%s][ADD FRIEND]" RESET " %d attempted unauthorized friend addition\n", buffer, sock);
                     goto nextMessage;
                 }
@@ -385,7 +401,7 @@ void* acceptMessage(void *arg) {
                     // Checking for authorization
                     long senderId = strtol(parts[0], nullptr, 10);
                     long receiverId = strtol(parts[1], nullptr, 10);
-                    if (senderId != curr->userId) { snprintf(response, sizeof(response), "addFriend/unauthorized"); goto nextMessage; }
+                    if (senderId != currC->userId) { snprintf(response, sizeof(response), "addFriend/unauthorized"); goto nextMessage; }
                     printf("[%s][ADD FRIEND] received for %ld -> %ld\n", buffer, senderId, receiverId);
 
                     // Validating ids
@@ -395,7 +411,7 @@ void* acceptMessage(void *arg) {
                         if (sendFriendRequest(senderId, receiverId)) {
 
                             // Pushing update request to receiver
-                            pushToUser(receiverId, "requestPendingFriends/", curr);
+                            pushToUser(receiverId, "requestPendingFriends/", currC);
                             printf("[%s][ADD FRIEND] Sent successfully %ld -> %ld\n", buffer, senderId, receiverId);
                         } else {
 
@@ -433,12 +449,12 @@ void* acceptMessage(void *arg) {
                     // Checking for authorization
                     long receiverId = strtol(parts[0], nullptr, 10);
                     long senderId   = strtol(parts[1], nullptr, 10);
-                    if (receiverId != curr->userId) { snprintf(response, sizeof(response), "acceptFriend/unauthorized"); goto nextMessage; }
+                    if (receiverId != currC->userId) { snprintf(response, sizeof(response), "acceptFriend/unauthorized"); goto nextMessage; }
 
                     if (acceptFriendRequest(receiverId, senderId)) {
                         // updating both clients
-                        pushToUser(senderId, "requestFriendUpdate/", curr);
-                        pushToUser(receiverId, "requestFriendUpdate/", curr);
+                        pushToUser(senderId, "requestFriendUpdate/", currC);
+                        pushToUser(receiverId, "requestFriendUpdate/", currC);
                     } else {
                         snprintf(response, sizeof(response), "acceptFriend/error");
                     }
@@ -449,7 +465,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "updateClient/", 13) == 0) {
 
                 // Checking secure channel status
-                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                if (currC->loggedIn==false || currC->hasSessionKey==false) {
                     printf(RED "[%s][UPDATE CLIENT]" RESET " %d attempted unauthorized client update access\n", buffer, sock);
                     goto nextMessage;
                 }
@@ -457,8 +473,8 @@ void* acceptMessage(void *arg) {
                 // Getting updates
                 long userId = strtol(fullMessage + 13, nullptr, 10);
                 printf("[%s][UPDATE CLIENT] Received for client/user %ld\n", buffer, userId);
-                if (userId == curr->userId) {
-                    getClientUpdates(userId, sock, curr);
+                if (userId == currC->userId) {
+                    getClientUpdates(userId, sock, currC);
                 } else {
                     snprintf(response, sizeof(response), "updateClient/unauthorized");
                 }
@@ -468,7 +484,7 @@ void* acceptMessage(void *arg) {
                 printf("[%s][REGISTER CLIENT] Received for client/user %ld\n", buffer, userId);
 
                 // Comparing user states
-                if (curr->userId == 0 && !curr->loggedIn && userId > 0) {
+                if (currC->userId == 0 && !currC->loggedIn && userId > 0) {
                     registerClient(userId, sock);
                 } else {
                     snprintf(response, sizeof(response), "registerClient/unauthorized");
@@ -504,9 +520,9 @@ void* acceptMessage(void *arg) {
                 if (mysql_query(conn, query)) {
                     printf("[%s][LOGIN CLIENT] Query Error: %s\n", buffer, mysql_error(conn));
                     pthread_mutex_unlock(&mysql_mutex);
-                    unregisterClient(curr);
-                    free(curr);
-                    curr = nullptr;
+                    unregisterClient(currC);
+                    free(currC);
+                    currC = nullptr;
                     close(sock);
                     goto client_disconnect;
                 }
@@ -514,9 +530,9 @@ void* acceptMessage(void *arg) {
                 if (result == NULL) {
                     mysql_free_result(result);
                     pthread_mutex_unlock(&mysql_mutex);
-                    unregisterClient(curr);
-                    free(curr);
-                    curr = nullptr;
+                    unregisterClient(currC);
+                    free(currC);
+                    currC = nullptr;
                     close(sock);
                     goto client_disconnect;
                 }
@@ -528,9 +544,9 @@ void* acceptMessage(void *arg) {
                 } else {
                     // Closing connection
                     printf("[%s][LOGIN CLIENT] No matching user found.\n", buffer);
-                    unregisterClient(curr);
-                    free(curr);
-                    curr = nullptr;
+                    unregisterClient(currC);
+                    free(currC);
+                    currC = nullptr;
                     close(sock);
                     goto client_disconnect;
                 }
@@ -546,20 +562,20 @@ void* acceptMessage(void *arg) {
 
                     // Authorizing client
                     registerClient(userId, sock);
-                    curr->loggedIn=true;
+                    currC->loggedIn=true;
                     printf("[%s][LOGIN CLIENT] User %ld\n authorized successfully\n", buffer, userId);
                 } else {
 
                     // Closing connection
                     printf("[%s][LOGIN CLIENT] User %ld\n failed to authorize: incorrect data\n", buffer, userId);
-                    unregisterClient(curr);
+                    unregisterClient(currC);
                     close(sock);
                 }
             }
             else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
 
                 // Checking secure channel state
-                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                if (currC->loggedIn==false || currC->hasSessionKey==false) {
                     printf(RED "[%s][GET CHAT HISTORY]" RESET " %d attempted unauthorized chat history access\n", buffer, sock);
                     goto nextMessage;
                 }
@@ -579,15 +595,15 @@ void* acceptMessage(void *arg) {
                     long friendId = strtol(parts[1], nullptr, 10);
                     printf("[%s][GET CHAT HISTORY] Received history request from %ld with %ld\n", buffer, userId, friendId);
 
-                    if (userId == curr->userId && friendId > 0) {
-                        getChatHistory(userId, friendId, sock, curr);
+                    if (userId == currC->userId && friendId > 0) {
+                        getChatHistory(userId, friendId, sock, currC);
                     }
                 }
             }
             else if (strncmp(fullMessage, "getAvatar/", 10) == 0) {
 
                 // Checking secure channel state
-                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                if (currC->loggedIn==false || currC->hasSessionKey==false) {
                     printf(RED "[%s][GET AVATAR]" RESET " %d attempted unauthorized avatar downloading\n", buffer, sock);
                     goto nextMessage;
                 }
@@ -645,7 +661,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "saveAvatar/", 11) == 0) {
 
                 // Checking secure connection state
-                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                if (currC->loggedIn==false || currC->hasSessionKey==false) {
                     printf(RED "[%s][SAVE AVATAR]" RESET " %d attempted unauthorized avatar saving\n", buffer, sock);
                     goto nextMessage;
                 }
@@ -653,7 +669,7 @@ void* acceptMessage(void *arg) {
                 long userId = strtol(ptr, &ptr, 10);
 
                 // Checking for authorization
-                if (userId != curr->userId || *ptr != '\x1E') {
+                if (userId != currC->userId || *ptr != '\x1E') {
                     printf("[%s][SAVE AVATAR] Parse error: invalid userId or missing separator\n", buffer);
                     printf("[%s][SAVE AVATAR] Received: %.100s...\n", buffer, fullMessage);
                     snprintf(response, sizeof(response), "saveAvatar/unauthorized");
@@ -719,7 +735,7 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "requestPendingFriends/", 22) == 0) {
 
                 // Checking secure connection state
-                if (curr->loggedIn==false || curr->hasSessionKey==false) {
+                if (currC->loggedIn==false || currC->hasSessionKey==false) {
                     printf(RED "[%s][REQUEST PENDING FRIENDS]" RESET " %d attempted unauthorized friend list access\n", buffer, sock);
                     goto nextMessage;
                 }
@@ -727,7 +743,7 @@ void* acceptMessage(void *arg) {
                 // Checking for authorization
                 char *ptr = fullMessage + 22;
                 long userId = strtol(ptr, &ptr, 10);
-                if (userId != curr->userId) {
+                if (userId != currC->userId) {
                     snprintf(response, sizeof(response), "requestPendingFriends/unauthorized");
                     goto nextMessage;
                 }
@@ -797,19 +813,83 @@ void* acceptMessage(void *arg) {
 
                         if (free_space_bytes > requestedSize) {
                             snprintf(response, sizeof(response), "check-space/allowed");
-                            curr->allowedFileUpload = true;
+                            currF->allowedToUpload = true;
+                            currF->userId = currentUserId;
                         } else {
                             snprintf(response, sizeof(response), "check-space/prohibited");
-                            curr->allowedFileUpload=false;
+                            currF->allowedToUpload = false;
                         }
                     }
                 }
+            }
+            else if (strncmp(fullMessage, "uploadFileData/", 15) == 0) {
+
+                // Checking secure connection state
+                if (currC->loggedIn==false || currC->hasSessionKey==false || currF->allowedToUpload==false || currF->userId!=currentUserId) {
+                    printf(RED "[%s][PREPARE FILE DOWNLOAD]" RESET " %d attempted unauthorized file saving\n", buffer, sock);
+                    goto nextMessage;
+                }
+
+                // Splitting user data
+                char *parts[4] = {0};
+                int count = 0;
+                char *saveptr = nullptr;
+
+                char *token = strtok_r(fullMessage + 15, "/", &saveptr);
+                while (token && count < 3) {          // first 3 numbers
+                    parts[count++] = token;
+                    token = strtok_r(nullptr, "/", &saveptr);
+                }
+                // the only thing left is name
+                if (count == 3 && saveptr && *saveptr != '\0') {
+                    parts[3] = saveptr;
+                    count = 4;
+                }
+
+                if (count != 4) {
+                    printf(RED "[%s][UPLOAD]" RESET " %d sent malformed uploadFileData\n", buffer, sock);
+                    goto nextMessage;
+                }
+
+                // Safe number parser
+                char *end;
+                errno = 0;
+                long steps = strtol(parts[0], &end, 10);
+                if (errno || *end != '\0' || steps <= 0) goto badParams;
+
+                errno = 0;
+                size_t chunkSize = strtoul(parts[1], &end, 10);
+                if (errno || *end != '\0' || chunkSize == 0 || chunkSize > MAX_CHUNK_SIZE) goto badParams;
+
+                errno = 0;
+                size_t fileSize = strtoul(parts[2], &end, 10);
+                if (errno || *end != '\0' || fileSize == 0 || fileSize > MAX_FILE_SIZE) goto badParams;
+
+                // Consistency: steps * chunkSize must cover fileSize
+                if ((unsigned long)steps * chunkSize < fileSize) goto badParams;
+
+                // Name check
+                size_t nameLen = strlen(parts[3]);
+                if (nameLen == 0 || nameLen >= sizeof(currF->name) ||
+                    strchr(parts[3], '/') || strchr(parts[3], '\\') ||
+                    strstr(parts[3], "..")) goto badParams;
+
+                pthread_mutex_lock(&filesMutex);
+                currF->steps = (int)steps;
+                currF->chunkSize = chunkSize;
+                currF->fileSize = fileSize;
+                snprintf(currF->name, sizeof(currF->name), "%s", parts[3]);
+                pthread_mutex_unlock(&filesMutex);
+                goto nextMessage;
+
+                badParams:
+                printf(RED "[%s][UPLOAD]" RESET " %d sent invalid upload parameters\n", buffer, sock);
             }
 
 
             nextMessage:
             if (strlen(response) > 0) {
-                sendPacket(sock, response, curr);
+                sendPacket(sock, response, currC);
                 printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Responding for request (sock %d): %s -> %s\n", buffer, id, sock, fullMessage, response);
                 memset(response, 0, PACKET_SIZE);
             }
@@ -827,7 +907,7 @@ void* acceptMessage(void *arg) {
     }
 
     client_disconnect:
-    unregisterClient(curr);
-    free(curr);
+    unregisterClient(currC);
+    free(currC);
     pthread_exit(NULL);
 }

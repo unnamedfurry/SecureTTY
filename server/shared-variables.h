@@ -9,6 +9,7 @@
 #include <mysql/mysql.h>
 #include <sodium/crypto_aead_xchacha20poly1305.h>
 #include <sodium/crypto_box.h>
+#include "blake3.h"
 
 // COLORS
 #define RESET   "\033[0m"
@@ -39,6 +40,9 @@
 #define MAX_MESS 2048
 #define PACKET_SIZE 524288
 #define MAX_RESPONSE (MAX_NAME + MAX_EMAIL + MAX_PASS + MAX_AVATAR + MAX_DESC + MAX_MESS)
+#define DEFAULT_FILE_UPLOAD_SIZE (5 * 1024 * 1024)
+#define MAX_CHUNK_SIZE (25 * 1024 * 1024)
+#define MAX_FILE_SIZE (25 * 1024 * 1024 * 1024)
 
 // SERVER DATA
 extern MYSQL *conn;
@@ -49,12 +53,24 @@ typedef struct ClientSession {
     bool hasSessionKey;
     bool loggedIn;
     bool closing;
-    bool allowedFileUpload;
     struct ClientSession *next;
 } ClientSession;
+typedef struct FileUpload {
+    char name[128];
+    char hashHex[BLAKE3_OUT_LEN * 2 + 1];
+    size_t fileSize;
+    size_t chunkSize;
+    size_t read;
+    int steps;
+    long userId;
+    bool allowedToUpload;
+    struct FileUpload *next;
+} FileUpload;
 extern ClientSession *activeClients;
+extern FileUpload *activeUploads;
 extern pthread_mutex_t mysql_mutex;
 extern pthread_mutex_t clientsMutex;
+extern pthread_mutex_t filesMutex;
 static pthread_mutex_t g_clients_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_server_fd = -1;
 static int g_client_socks[MAX_CLIENTS];

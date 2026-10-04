@@ -59,25 +59,28 @@ int UploadFile(char* filePath) {
 
         unsigned char *packet = malloc(15 + chunkSize);
         if (!packet) { fclose(file); return -2; }
-        memcpy(packet, "uploadFileData/", 15);
 
         for (int i = 0; i < steps; i++) {
+            memcpy(packet, "uploadFileData/", 15);
+
             size_t n = fread(packet + 15, 1, chunkSize, file);
             if (n == 0) break;
 
             if (!sendBinaryMessage(packet, 15 + n)) {
-                free(packet); fclose(file); return -4; // добавь код "ошибка сети"
+                free(packet); fclose(file); return -4;
             }
             offset += n;
 
             uint8_t raw_hash[BLAKE3_OUT_LEN];
-            char hex[BLAKE3_OUT_LEN * 2 + 1];
+            char hashHex[BLAKE3_OUT_LEN * 2 + 1];
             get_blake3_hash((const char*)packet + 15, n, raw_hash);
-            bytes_to_hex_string(raw_hash, hex);
+            bytes_to_hex_string(raw_hash, hashHex);
 
             char checkPacket[128];
-            snprintf(checkPacket, sizeof checkPacket, "uploadFileCheck/%zu,%s", n, hex);
+            snprintf(checkPacket, sizeof checkPacket, "uploadFileCheck/%zu,%s", n, hashHex);
             sendMessage(checkPacket);
+
+            memset(packet, 0, 15+chunkSize);
         }
         free(packet);
         fclose(file);
@@ -113,4 +116,5 @@ int UploadFile(char* filePath) {
  * -1 - файл не найден / не получается открыть
  * -2 - ошибка выделения памяти
  * -3 - файл пустой
+ * -4 - ошибка сети
  */
