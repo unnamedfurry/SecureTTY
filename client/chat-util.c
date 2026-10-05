@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <sys/stat.h>
 
 #include "blake3.h"
@@ -14,6 +15,8 @@ extern void sendMessage(const char *message);
 extern void get_blake3_hash(const char *input, size_t input_len, uint8_t output[BLAKE3_OUT_LEN]);
 extern void bytes_to_hex_string(const uint8_t *hash_bytes, char *output_buffer);
 extern bool sendBinaryMessage(unsigned char *data, uint32_t size);
+extern bool SaveEncryptedConfig(Config *cfg, const char* master_password, char* path2);
+extern bool LoadEncryptedConfig(Config *cfg, const char* master_password);
 
 struct stat st;
 size_t offset = 0;
@@ -91,6 +94,99 @@ int UploadFile(char* filePath) {
     }
 
     return 0;
+}
+
+void* processRegistering(void *arg) {
+    config.isFirstUsed = false;
+
+    // Getting new id from server
+    sendMessage("createId/user");
+    // Awaiting for response
+    for (int i = 0; i < 2500 && config.userId == 0; i++) {
+        usleep(10000);
+    }
+
+    // No user id = no further working
+    if (config.userId == 0) {
+        printf("[CREATE USER ID] Timed out while waiting ID from server. retrying\n");
+
+        // Resetting values in case user restarts app
+        connected=false;
+        config.isFirstUsed = true;
+        return nullptr;
+    }
+
+    // Last preparing
+    memset(config.avatarUrl, 0, MAX_AVATAR);
+    strncpy(config.avatarUrl, "null", 4);
+    if (strlen(config.avatarUrl)==0) strncpy(config.avatarUrl, "null", 4);
+
+    char registerPacket[256] = {0};
+    snprintf(registerPacket, 256, "login/%ld\x1E%s\x1E%s", config.userId, config.email, config.passwordHash);
+    sendMessage(registerPacket);
+
+    // Save and switch to main state
+    SaveEncryptedConfig(&config, masterPassword, nullptr);
+    currentState=STATE_MAIN_CHAT;
+
+    return nullptr;
+}
+
+void* processLogin(void *arg) {
+    // If password is too short we dont accept it
+    if (strlen(masterPassword)>5) {
+        // Checking if config file exists
+        if (FileExists(CONFIG_FILE)) {
+            // Loading config using password user just typed
+            if (LoadEncryptedConfig(&config, masterPassword)) {
+                // Zeroing all values from possible garbage
+                memset(friends, 0, sizeof(friends));
+                memset(pendingFriends, 0, sizeof(pendingFriends));
+
+                // If config has valid data we attempt login
+                if (config.isFirstUsed==false && config.userId != 0) {
+                    char msgBuf[BUFFER_SIZE] = {0};
+                    snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s", config.userId, config.email, config.passwordHash);
+                    sendMessage(msgBuf);
+                    loggedIn=true;
+
+                    // Checking if client established secure connection
+                    // before requesting sensitive data
+                    if (hasSessionKey) {
+                        memset(msgBuf, 0, BUFFER_SIZE);
+                        snprintf(msgBuf, sizeof(msgBuf), "getFriendsList/%ld", config.userId);
+                        sendMessage(msgBuf);
+                        memset(msgBuf, 0, sizeof(msgBuf));
+                        snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
+                        sendMessage(msgBuf);
+                    } else {
+                        // exiting the cycle and jumping to draw end
+                        return nullptr;
+                    }
+                    currentState=STATE_MAIN_CHAT;
+                } else {
+                    // Preparing app for user profile creation
+                    printf(cYELLOW "[WARN]" RESET "[APP INIT] User ID is 0.\n");
+                    strcpy(config.userName, "");
+                    strcpy(config.email, "");
+                    strcpy(config.passwordHash, "");
+                    strcpy(config.profileDescription, "");
+                    config.isFirstUsed=true;
+                    currentState=STATE_FIRST_SETUP;
+                }
+            } else {
+                wrongPass=true;
+            }
+        } else {
+            // Switch to fist setup directly
+            memset(friends, 0, sizeof(friends));
+            memset(pendingFriends, 0, sizeof(pendingFriends));
+            currentState=STATE_FIRST_SETUP;
+            return nullptr;
+        }
+    }
+
+    return nullptr;
 }
 
 /**

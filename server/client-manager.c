@@ -54,7 +54,6 @@ void registerClient(long userId, int sock) {
 
     if (mine) {
         mine->userId = userId;           // key and hasSessionKey are saved
-        mine->loggedIn=true;
     }
     printf("[%s][NETWORK] Client registered: userId=%ld, sock=%d\n", buffer, userId, sock);
     pthread_mutex_unlock(&clientsMutex);

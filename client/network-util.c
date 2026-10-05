@@ -206,11 +206,6 @@ void* receiveMessage(void* arg) {
                         // Saving value
                         config.userId = newId;
                         printf("[CREATE USER ID] Got new id from server: %ld\n", newId);
-
-                        // Initializing structure slot for new client
-                        char msgBuf[BUFFER_SIZE];
-                        snprintf(msgBuf, sizeof(msgBuf), "registerClient/%ld", newId);
-                        sendMessage(msgBuf);
                     }
                 }
                 else if (strncmp(fullMessage, "createId/message/", 17) == 0) {

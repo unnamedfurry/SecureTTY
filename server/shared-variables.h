@@ -41,11 +41,12 @@
 #define PACKET_SIZE 524288
 #define MAX_RESPONSE (MAX_NAME + MAX_EMAIL + MAX_PASS + MAX_AVATAR + MAX_DESC + MAX_MESS)
 #define DEFAULT_FILE_UPLOAD_SIZE (5 * 1024 * 1024)
-#define MAX_CHUNK_SIZE (25 * 1024 * 1024)
-#define MAX_FILE_SIZE (25 * 1024 * 1024 * 1024)
+#define MAX_CHUNK_SIZE (25L * 1024 * 1024)
+#define MAX_FILE_SIZE (25UL * 1024 * 1024 * 1024)
 
 // SERVER DATA
 extern MYSQL *conn;
+
 typedef struct ClientSession {
     long userId;
     int sock;
@@ -55,6 +56,7 @@ typedef struct ClientSession {
     bool closing;
     struct ClientSession *next;
 } ClientSession;
+
 typedef struct FileUpload {
     char name[128];
     char hashHex[BLAKE3_OUT_LEN * 2 + 1];
@@ -66,6 +68,7 @@ typedef struct FileUpload {
     bool allowedToUpload;
     struct FileUpload *next;
 } FileUpload;
+
 extern ClientSession *activeClients;
 extern FileUpload *activeUploads;
 extern pthread_mutex_t mysql_mutex;
@@ -75,7 +78,6 @@ static pthread_mutex_t g_clients_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_server_fd = -1;
 static int g_client_socks[MAX_CLIENTS];
 static int g_client_count = 0;
-extern bool finishedResponse;
 
 // CRYPTOGRAPHY
 static unsigned char serverPublicKey[crypto_box_PUBLICKEYBYTES];

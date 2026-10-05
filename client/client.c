@@ -26,15 +26,11 @@ extern int WrapText(const char* text, char* output, int maxOutputSize, int maxLi
 extern float clamp(float val, float min, float max);
 extern char* GuiFileSelector(Rectangle bounds, char *text, Font font, Color primaryColor, Color secondaryColor, Color textColor);
 extern int UploadFile(char* filePath);
+extern void* processRegistering(void *arg);
+extern void* processLogin(void *arg);
 
 
 // GLOBAL VARIABLES
-typedef enum {
-    STATE_MASTER_PASSWORD,
-    STATE_FIRST_SETUP,
-    STATE_MAIN_CHAT
-} AppState;
-AppState currentState = STATE_MASTER_PASSWORD;
 Font font;
 char *path2 = nullptr;
 char newDesc[1025] = "";
@@ -42,8 +38,6 @@ char message[2049] = "";
 char userId[15] = "";
 char avatarPathInput[512] = {0};
 bool userAgreed = false;
-bool wrongPass = false;
-bool loggedIn = false;
 bool passwordSecretMode = true;
 bool sendsMessage = false;
 bool isAddingFriend = false;
@@ -104,57 +98,11 @@ int MasterPasswordState() {
             wrongPass=false;
         }
         if (IsKeyPressed(KEY_ENTER)) {
-            // If password is too short we dont accept it
-            if (strlen(masterPassword)>5) {
-                // Checking if config file exists
-                if (FileExists(CONFIG_FILE)) {
-                    // Loading config using password user just typed
-                    if (LoadEncryptedConfig(&config, masterPassword)) {
-                        // Zeroing all values from possible garbage
-                        memset(friends, 0, sizeof(friends));
-                        memset(pendingFriends, 0, sizeof(pendingFriends));
-
-                        // If config has valid data we attempt login
-                        if (config.isFirstUsed==false && config.userId != 0) {
-                            char msgBuf[BUFFER_SIZE] = {0};
-                            snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s", config.userId, config.email, config.passwordHash);
-                            sendMessage(msgBuf);
-                            loggedIn=true;
-
-                            // Checking if client established secure connection
-                            // before requesting sensitive data
-                            if (hasSessionKey) {
-                                memset(msgBuf, 0, BUFFER_SIZE);
-                                snprintf(msgBuf, sizeof(msgBuf), "getFriendsList/%ld", config.userId);
-                                sendMessage(msgBuf);
-                                memset(msgBuf, 0, sizeof(msgBuf));
-                                snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
-                                sendMessage(msgBuf);
-                            } else {
-                                // exiting the cycle and jumping to draw end
-                                return 1;
-                            }
-                            currentState=STATE_MAIN_CHAT;
-                        } else {
-                            // Preparing app for user profile creation
-                            printf(cYELLOW "[WARN]" RESET "[APP INIT] User ID is 0.\n");
-                            strcpy(config.userName, "");
-                            strcpy(config.email, "");
-                            strcpy(config.passwordHash, "");
-                            strcpy(config.profileDescription, "");
-                            config.isFirstUsed=true;
-                            currentState=STATE_FIRST_SETUP;
-                        }
-                    } else {
-                        wrongPass=true;
-                    }
-                } else {
-                    // Switch to fist setup directly
-                    memset(friends, 0, sizeof(friends));
-                    memset(pendingFriends, 0, sizeof(pendingFriends));
-                    currentState=STATE_FIRST_SETUP;
-                    return 1;
-                }
+            if (pthread_create(&thread_id, nullptr, processLogin, nullptr) == 0) {
+                pthread_detach(thread_id);
+            } else {
+                printf("[FATAL] Failed to create login processing thread\n");
+                exit(-1);
             }
         }
     }
@@ -251,33 +199,13 @@ int FirstSetupState() {
 
     // Register
     if (GuiButton((Rectangle){100, 450, 200, 50}, "Сохранить и продолжить") || IsKeyPressed(KEY_ENTER)) {
-        config.isFirstUsed = false;
 
-        // Getting new id from server
-        sendMessage("createId/user");
-        // Awaiting for response
-        for (int i = 0; i < 2500 && config.userId == 0; i++) {
-            usleep(10000);
+        if (pthread_create(&thread_id, nullptr, processRegistering, nullptr) == 0) {
+            pthread_detach(thread_id);
+        } else {
+            printf("[FATAL] Failed to create register processing thread\n");
+            exit(-1);
         }
-
-        // No user id = no further working
-        if (config.userId == 0) {
-            printf("[CREATE USER ID] Timed out while waiting ID from server. retrying\n");
-
-            // Resetting values in case user restarts app
-            connected=false;
-            config.isFirstUsed = true;
-            return 1;
-        }
-
-        // Last preparing
-        memset(config.avatarUrl, 0, MAX_AVATAR);
-        strncpy(config.avatarUrl, "null", 4);
-        if (strlen(config.avatarUrl)==0) strncpy(config.avatarUrl, "null", 4);
-
-        // Save and switch to main state
-        SaveEncryptedConfig(&config, masterPassword, nullptr);
-        currentState=STATE_MAIN_CHAT;
     }
 
     // Lost connection warning
@@ -1181,6 +1109,18 @@ int MainState() {
     return 0;
 }
 
+int ProcessingState() {
+
+    static float angle = 0.0f;
+    angle += 360.0f * GetFrameTime();   // one rotation per minute
+    if (angle >= 360.0f) angle -= 360.0f;
+
+    Vector2 center = { 400, 300 };
+    // 270° = 3/4 of circle, "bitten-off" fourth part remain hidden
+    DrawRing(center, 30.0f, 40.0f, angle, angle + 270.0f, 64, WHITE);
+
+    return 0;
+}
 
 #define RGBA_TO_HEX(r, g, b, a) (((r) << 24) | ((g) << 16) | ((b) << 8) | (a))
 int main(void) {
@@ -1293,6 +1233,12 @@ int main(void) {
             case STATE_MAIN_CHAT:
 
                 if (MainState() == 1) goto next;
+
+                break;
+
+            case STATE_PROCESSING:
+
+                if (ProcessingState() == 1) goto next;
 
                 break;
         }

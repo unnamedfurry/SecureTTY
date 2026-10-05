@@ -10,4 +10,3 @@ FileUpload *activeUploads = nullptr;
 pthread_mutex_t mysql_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t clientsMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t filesMutex = PTHREAD_MUTEX_INITIALIZER;
-bool finishedResponse = false;

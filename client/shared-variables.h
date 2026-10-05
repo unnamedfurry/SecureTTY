@@ -79,6 +79,15 @@ typedef struct {
     int cachedBubbleWidth;
 } Message;
 extern Message messages[1000000];
+
+typedef enum {
+    STATE_MASTER_PASSWORD,
+    STATE_FIRST_SETUP,
+    STATE_MAIN_CHAT,
+    STATE_PROCESSING
+} AppState;
+extern AppState currentState;
+
 extern Texture2D userAvatarTexture;
 extern Texture2D friendAvatarArr[100];
 extern Texture2D pendingFriendAvatarArr[100];
@@ -87,6 +96,8 @@ extern bool hasFriendRequests;
 extern bool isUpdatedMessages;
 extern bool isUpdatedFriends;
 extern bool canUploadFile;
+extern bool loggedIn;
+extern bool wrongPass;
 extern long currentFriendId;
 extern int messagesCount;
 extern int friendsCount;
