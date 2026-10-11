@@ -22,17 +22,19 @@ Message messages[1000000] = {0};
 Texture2D userAvatarTexture = {0};
 Texture2D friendAvatarArr[100] = {0};
 Texture2D pendingFriendAvatarArr[100] = {0};
-AppState currentState = STATE_PROCESSING;
+AppState currentState = STATE_MASTER_PASSWORD;
 bool requestedAvatarUpdate = false;
 bool hasFriendRequests = false;
 bool isUpdatedMessages = false;
 bool isUpdatedFriends = false;
+bool hasMoreMessages = false;
 bool canUploadFile = false;
 bool loggedIn = false;
 bool wrongPass = false;
 long currentFriendId = 0L;
 int messagesCount = -2;
 int friendsCount = -2;
+int messageOffset = 0;
 
 // CRYPTO DATA
 pthread_mutex_t clientStateMutex = PTHREAD_MUTEX_INITIALIZER;

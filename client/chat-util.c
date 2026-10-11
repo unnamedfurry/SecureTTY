@@ -121,8 +121,8 @@ void* processRegistering(void *arg) {
     strncpy(config.avatarUrl, "null", 4);
     if (strlen(config.avatarUrl)==0) strncpy(config.avatarUrl, "null", 4);
 
-    char registerPacket[256] = {0};
-    snprintf(registerPacket, 256, "login/%ld\x1E%s\x1E%s", config.userId, config.email, config.passwordHash);
+    char registerPacket[482] = {0};
+    snprintf(registerPacket, 482, "login/%ld\x1E%s\x1E%s\x1E%s", config.userId, config.email, config.password, config.userName);
     sendMessage(registerPacket);
 
     // Save and switch to main state
@@ -146,7 +146,7 @@ void* processLogin(void *arg) {
                 // If config has valid data we attempt login
                 if (config.isFirstUsed==false && config.userId != 0) {
                     char msgBuf[BUFFER_SIZE] = {0};
-                    snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s", config.userId, config.email, config.passwordHash);
+                    snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s\x1E%s", config.userId, config.email, config.password, config.userName);
                     sendMessage(msgBuf);
                     loggedIn=true;
 
@@ -169,7 +169,7 @@ void* processLogin(void *arg) {
                     printf(cYELLOW "[WARN]" RESET "[APP INIT] User ID is 0.\n");
                     strcpy(config.userName, "");
                     strcpy(config.email, "");
-                    strcpy(config.passwordHash, "");
+                    strcpy(config.password, "");
                     strcpy(config.profileDescription, "");
                     config.isFirstUsed=true;
                     currentState=STATE_FIRST_SETUP;

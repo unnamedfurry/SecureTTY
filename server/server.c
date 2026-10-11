@@ -13,6 +13,8 @@
 #include "server.h"
 #include <sodium.h>
 #include <signal.h>
+#include <dirent.h>
+#include <sys/syscall.h>
 
 // Shared variables and methods
 #include "shared-variables.h"
@@ -87,11 +89,12 @@ int main(void) {
 
     conn = mysql_init(nullptr);
 
+    mysql_options(conn, MYSQL_SET_CHARSET_NAME, "utf8mb4");
     if (mysql_real_connect(conn, HOST, MYSQL_USER, MYSQL_PASSWORD, "securetty", 0, nullptr, 0) == NULL) {
     //if (mysql_real_connect(conn, "localhost", "root", "681137", "securetty", 0, nullptr, 0) == NULL) {
         printf("[%s][MYSQL] Failed to connect to database: %s\n", buffer, mysql_error(conn));
         mysql_close(conn);
-        return 0;
+        return 1;
     }
 
     printf("[%s][MYSQL] Connected to database successfully\n", buffer);
@@ -136,16 +139,7 @@ int main(void) {
     for (int i = 0; i < 3; i++) {
         if (mysql_query(conn, queries[i])) {
             printf("[%s][MYSQL] Error creating table %d: %s\n", buffer, i, mysql_error(conn));
-        } else {
-            printf("[%s][MYSQL] Table %d created successfully\n", buffer, i);
-        }
-    }
-
-    int num_queries = sizeof(queries) / sizeof(queries[0]);
-
-    for (int i = 0; i < num_queries; i++) {
-        if (mysql_query(conn, queries[i])) {
-            printf("[%s][MYSQL] Error creating table %d: %s\n", buffer, i, mysql_error(conn));
+            exit(2);
         } else {
             printf("[%s][MYSQL] Table %d created successfully\n", buffer, i);
         }
@@ -181,9 +175,12 @@ int main(void) {
     sigaction(SIGTERM, &sa, nullptr);
     sigaction(SIGHUP, &sa, nullptr);
 
-    while (!g_shutdown) {
+    static int usersCount = 0;
+
+    while (!g_shutdown && usersCount<MAX_CLIENTS) {
         new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
         if (new_socket < 0) {
+            close(new_socket);
             if (g_shutdown) break;
             continue;
         }
@@ -197,20 +194,105 @@ int main(void) {
 
         if (pthread_create(&thread_id, &attr, acceptMessage, client_sock_ptr) == 0) {
             pthread_detach(thread_id);
+            usersCount++;
         } else {
             close(new_socket);
             free(client_sock_ptr);
         }
     }
 
-    // Cleanup
+    // Cleanup (custom way)
     pthread_mutex_lock(&clientsMutex);
     for (ClientSession *c = activeClients; c; c = c->next) {
         shutdown(c->sock, SHUT_RDWR);
     }
     pthread_mutex_unlock(&clientsMutex);
-    usleep(200000);
+    usleep(500000);
+    // Cleanup (legacy way)
+    struct dirent *entry;
+    DIR *dp = opendir("/proc/self/fd");
+
+    if (dp == NULL) {
+        perror("Failed to open /proc/self/fd");
+        goto skip;
+    }
+
+    // Get the file descriptor of the DIR stream so we don't accidentally close it
+    int dir_fd = dirfd(dp);
+
+    while ((entry = readdir(dp))) {
+        // Skip "." and ".." directories
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        int fd = atoi(entry->d_name);
+
+        // Skip standard streams (0: stdin, 1: stdout, 2: stderr) if you want to keep them
+        if (fd == 0 || fd == 1 || fd == 2) {
+            continue;
+        }
+
+        // CRITICAL: Skip the directory descriptor itself
+        if (fd == dir_fd) {
+            continue;
+        }
+
+        // Check where the symlink points
+        char linkpath[256];
+        char realpath[256];
+        snprintf(linkpath, sizeof(linkpath), "/proc/self/fd/%d", fd);
+
+        ssize_t len = readlink(linkpath, realpath, sizeof(realpath) - 1);
+        if (len != -1) {
+            realpath[len] = '\0';
+
+            // If the symlink starts with "socket:", it's an active socket
+            if (strncmp(realpath, "socket:", 7) == 0) {
+                printf("Closing socket descriptor: FD %d -> %s\n", fd, realpath);
+                close(fd);
+            }
+        }
+    }
+    closedir(dp);
+
+    skip:
+    // Close all threads (modern way)
     pthread_attr_destroy(&attr);
+    usleep(500000);
+    // Close all threads (legacy way)
+    DIR *dir = opendir("/proc/self/task");
+    struct dirent *entry2;
+
+    // Get the raw Linux Thread ID (TID) of the CURRENT thread
+    pid_t my_tid = syscall(SYS_gettid);
+    pid_t my_pid = getpid();
+
+    if (!dir) {
+        perror("Failed to open /proc/self/task");
+        goto skip2;
+    }
+
+    printf("Scanning /proc/self/task/ for sibling threads...\n");
+
+    while ((entry2 = readdir(dir))) {
+        int tid = atoi(entry2->d_name);
+
+        // Skip non-numeric entries, ".", "..", and our own thread
+        if (tid <= 0 || tid == my_tid) {
+            continue;
+        }
+
+        printf("  Found sibling Thread ID (TID): %d. Sending exit signal...\n", tid);
+
+        // tgkill(pid, tid, signal) targets exactly this thread in our process
+        syscall(SYS_tgkill, my_pid, tid, SIGUSR1);
+    }
+
+    closedir(dir);
+
+    skip2:
+    usleep(100000);
     close(new_socket);
     close(server_fd);
     printf("\nExiting.\n");

@@ -28,11 +28,12 @@ extern bool EncryptPacket(ClientSession *session, const char* plaintext, char* o
 extern bool sendPacket(int sock, const char *data, ClientSession *curr);
 extern char* Base64Encode(const unsigned char* input, int length);
 extern unsigned char* Base64Decode(const char* input, int* out_len);
+extern bool appendf(char *buf, size_t size, size_t *off, const char *fmt, ...);
 
 // Client actions
 extern bool pushToUser(long userId, const char *data, ClientSession *curr);
 extern void getClientUpdates(long userId, int sock, ClientSession *curr);
-extern void getChatHistory(long userId, long friendId, int sock, ClientSession *curr);
+extern void getChatHistory(long userId, long friendId, int sock, int offset, ClientSession *curr);
 extern bool saveUserToDB(long userId, const char *username, const char *email,
                          const char *password, const char *avatarUrl, const char *profileDesc);
 extern bool saveMessageToDB(long messageId, long senderId, long receiverId, const char *message);
@@ -126,23 +127,19 @@ void* acceptMessage(void *arg) {
                 pthread_mutex_unlock(&filesMutex);
             }
 
+            //if (currC->closing==true) goto client_disconnect;
+
+
+            //
+            //      CREATE ID, TEST, CRYPTO AND LOGIN COMMANDS
+            //
+
+
             // The only 3 things that should be available
             // to user at any cost
-            if (strncmp(fullMessage, "createId/user", 13) == 0) {
-                // Creating an id for a new user
 
-                srand(time(nullptr) ^ clock());
-                // generating 10-digit number from 1000000000 to 9999999999
-                long userId = 1000000000L + (rand() % 9000000000L);
-                snprintf(response, sizeof(response), "createId/user/%ld", userId);
-                printf("[%s][CREATE USER ID] New Id generated for user: %ld\n", buffer, userId);
-
-            }
-            else if (strcmp(fullMessage, "test/") == 0) {
-                snprintf(response, sizeof(response), "ok");
-            }
             // Key exchanging
-            else if (strncmp(fullMessage, "keyexchange/", 12) == 0) {
+            if (strncmp(fullMessage, "keyexchange/", 12) == 0) {
                 char *clientPubB64 = fullMessage + 12;
 
                 unsigned char clientPubKey[crypto_box_PUBLICKEYBYTES] = {0};
@@ -199,6 +196,7 @@ void* acceptMessage(void *arg) {
             }
 
             // Decrypting packet
+            if (!currC) goto nextMessage;
             char decrypted[PACKET_SIZE] = {0};
             bool decryptedState = false;
             if (DecryptPacket(serverSessionKey, fullMessage, decrypted, sizeof(decrypted))) {
@@ -212,25 +210,34 @@ void* acceptMessage(void *arg) {
                 memcpy(fullMessage, decrypted, dlen);
                 fullMessage[dlen] = '\0';
                 decryptedState = true;
-                if (currC) currC->hasSessionKey=true;
+                currC->hasSessionKey=true;
             }
 
             printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Client said (full message, %zu bytes): %s\n", buffer, id, msgLen, fullMessage);
 
-            if (!currC) goto nextMessage;
+            if (strncmp(fullMessage, "createId/user", 13) == 0) {
+                // Creating an id for a new user
+
+                srand(time(nullptr) ^ clock());
+                // generating 10-digit number from 1000000000 to 9999999999
+                long userId = 1000000000L + (rand() % 9000000000L);
+                snprintf(response, sizeof(response), "createId/user/%ld", userId);
+                printf("[%s][CREATE USER ID] New Id generated for user: %ld\n", buffer, userId);
+                goto nextMessage;
+            }
             if (strncmp(fullMessage, "login/", 6) == 0 && !currC->loggedIn) {
 
                 // Splitting login data
-                char *parts[3] = {0};
+                char *parts[4] = {0};
                 int count = 0;
                 char *token = strtok(fullMessage + 6, "\x1E");
-                while (token && count < 3) {
+                while (token && count < 4) {
                     parts[count++] = token;
                     token = strtok(nullptr, "\x1E");
                 }
 
                 // Validating syntax
-                if (count != 3) {
+                if (count != 4) {
                     printf("[%s][LOGIN] Not enough parameters for login\n", buffer);
                     goto nextMessage;
                 }
@@ -238,11 +245,13 @@ void* acceptMessage(void *arg) {
                 // Screening sensitive data
                 long userId = strtol(parts[0], nullptr, 10);
                 char esc_email[MAX_EMAIL*2 + 10] = {0};
+                char esc_name[MAX_NAME*2 + 10] = {0};
                 char password[crypto_pwhash_STRBYTES+10] = {0};
                 pthread_mutex_lock(&mysql_mutex);
                 mysql_real_escape_string(conn, esc_email,    parts[1],    strlen(parts[1]));
-                char query[256];
-                snprintf(query, 256, "SELECT passwordHash FROM users WHERE userId = %ld AND email = '%s' LIMIT 1", userId, esc_email);
+                mysql_real_escape_string(conn, esc_name,    parts[3],    strlen(parts[3]));
+                char query[512];
+                snprintf(query, 512, "SELECT passwordHash FROM users WHERE userId = %ld AND email = '%s' AND username = '%s' LIMIT 1", userId, esc_email, esc_name);
 
                 // Fetching table with query
                 if (mysql_query(conn, query)) {
@@ -269,88 +278,71 @@ void* acceptMessage(void *arg) {
                 MYSQL_ROW row = mysql_fetch_row(result);
                 if (row != NULL && row[0] != NULL) {
                     strncpy(password, row[0], sizeof(password) - 1);
-                } else {
-                    // Closing connection
-                    printf("[%s][LOGIN CLIENT] No matching user found.\n", buffer);
+
                     mysql_free_result(result);
                     pthread_mutex_unlock(&mysql_mutex);
-                    unregisterClient(currC);
-                    free(currC);
-                    currC = nullptr;
-                    close(sock);
-                    goto client_disconnect;
-                }
-                mysql_free_result(result);
-                pthread_mutex_unlock(&mysql_mutex);
 
-                // Comparing passwords
-                bool ok = false;
-                if (strlen(password) > 0) ok = crypto_pwhash_str_verify(password, parts[2], strlen(parts[2])) == 0;
+                    // Comparing passwords
+                    bool ok = false;
+                    if (strlen(password) > 0) ok = crypto_pwhash_str_verify(password, parts[2], strlen(parts[2])) == 0;
 
-                printf("[%s][LOGIN CLIENT] Received for client/user %ld\n", buffer, userId);
-                if (userId > 0 && ok == true) {
+                    printf("[%s][LOGIN CLIENT] Received for client/user %ld\n", buffer, userId);
+                    if (userId > 0 && ok == true) {
 
-                    // Authorizing client
-                    registerClient(userId, sock);
-                    currC->loggedIn=true;
-                    printf("[%s][LOGIN CLIENT] User %ld\n authorized successfully\n", buffer, userId);
-                } else {
-
-                    // Closing connection
-                    printf("[%s][LOGIN CLIENT] User %ld\n failed to authorize: incorrect data\n", buffer, userId);
-                    unregisterClient(currC);
-                    close(sock);
-                    free(currC);
-                    currC=nullptr;
-                }
-            }
-            /*else if (strncmp(fullMessage, "registerClient/", 15) == 0) {
-                long userId = strtol(fullMessage + 15, nullptr, 10);
-                printf("[%s][REGISTER CLIENT] Received for client/user %ld\n", buffer, userId);
-
-                // 3. Execute the SQL request
-                const char *query = "SELECT userId, userName, email FROM users";
-                if (mysql_query(conn, query) != 0) {
-                    fprintf(stderr, "mysql_query() failed: %s\n", mysql_error(conn));
-                    mysql_close(conn);
-                    goto nextMessage;
-                }
-
-                // 4. Store the result set
-                MYSQL_RES *result = mysql_store_result(conn);
-                if (result == NULL) {
-                    // mysql_store_result can return NULL if the query didn't return data (e.g., INSERT/UPDATE)
-                    if (mysql_field_count(conn) > 0) {
-                        fprintf(stderr, "Error retrieving result: %s\n", mysql_error(conn));
+                        // Authorizing client
+                        registerClient(userId, sock);
+                        currC->loggedIn=true;
+                        printf("[%s][LOGIN CLIENT] User %ld\n authorized successfully\n", buffer, userId);
                     } else {
-                        printf("Query executed successfully, no rows returned.\n");
+
+                        // Closing connection
+                        printf("[%s][LOGIN CLIENT] User %ld\n failed to authorize: incorrect data\n", buffer, userId);
+                        unregisterClient(currC);
+                        close(sock);
+                        free(currC);
+                        currC=nullptr;
                     }
-                    mysql_close(conn);
-                    goto nextMessage;
-                }
-
-                // 5. Fetch and print the rows
-                MYSQL_ROW row;
-                printf("--- User Data ---\n");
-                while ((row = mysql_fetch_row(result)) != NULL) {
-                    // row columns are indexed starting at 0 and returned as strings
-                    printf("ID: %s | Name: %s | Email: %s\n",
-                           row[0] ? row[0] : "NULL",
-                           row[1] ? row[1] : "NULL",
-                           row[2] ? row[2] : "NULL");
-                }
-
-                // 6. Clean up and close connection
-                mysql_free_result(result);
-                mysql_close(conn);
-
-                // Comparing user states
-                if (currC->userId == 0 && !currC->loggedIn && userId > 0) {
-                    registerClient(userId, sock);
                 } else {
-                    snprintf(response, sizeof(response), "registerClient/unauthorized");
+                    // Closing connection
+                    printf("[%s][LOGIN CLIENT] No matching user found, signing user in (%ld, %s)\n", buffer, userId, parts[3]);
+
+                    mysql_free_result(result);
+                    pthread_mutex_unlock(&mysql_mutex);
+
+                    if (userId > 0) {
+                        // Authorizing client
+                        registerClient(userId, sock);
+                        currC->loggedIn=true;
+                        printf("[%s][LOGIN CLIENT] User %ld\n signed in successfully\n", buffer, userId);
+                    } else {
+
+                        // Closing connection
+                        printf("[%s][LOGIN CLIENT] User %ld\n failed to sign in: incorrect data\n", buffer, userId);
+                        unregisterClient(currC);
+                        close(sock);
+                        free(currC);
+                        currC=nullptr;
+                    }
+
+                    bool success = saveUserToDB(userId,
+                                        parts[3], parts[1], parts[2],
+                                        "null", "");
+                    if (success) {
+                        snprintf(response, sizeof(response), "login/signed-in");
+                    } else {
+                        // Reporting error to client
+                        snprintf(response, sizeof(response), "login/error");
+                    }
                 }
-            }*/
+                usleep(100000);
+                goto nextMessage;
+            }
+
+
+            //
+            //        REGULAR MESSAGES BLOCK
+            //
+
 
             // Checking for secured channel
             if (currC->loggedIn==false || currC->hasSessionKey==false || decryptedState==false) {
@@ -457,8 +449,9 @@ void* acceptMessage(void *arg) {
 
                     // Reporting error to client
                     snprintf(response, sizeof(response), "save-profile/badformat/");
-                    if (parts[0]) {
-                        char *profile = getUserFromDB(strtol(parts[0], nullptr, 10));
+                    long uid = strtol(parts[0], nullptr, 10);
+                    if (parts[0] && uid == currC->userId) {
+                        char *profile = getUserFromDB(uid);
                         if (profile) {
                             snprintf(response+23, sizeof(response)-24, "%s", profile);
                             free(profile);
@@ -472,7 +465,8 @@ void* acceptMessage(void *arg) {
                 long userId = strtol(fullMessage + 15, nullptr, 10);
                 if (userId != currC->userId) { snprintf(response, sizeof(response), "getFriendsList/unauthorized"); goto nextMessage; }
                 if (userId <= 0) goto nextMessage;
-                int offset = snprintf(response, sizeof(response), "getFriendsList/");
+                size_t offset = 0;
+                appendf(response, sizeof(response), &offset, "getFriendsList/");
 
                 // getting relatedUserId
                 char query[1024];
@@ -488,7 +482,7 @@ void* acceptMessage(void *arg) {
                     if (res) {
                         MYSQL_ROW row;
                         while ((row = mysql_fetch_row(res))) {
-                            offset += snprintf(response + offset, sizeof(response) - offset,
+                            appendf(response, sizeof(response), &offset,
                                 "%s\x1F%ld\x1F%s\x1F%s\x1E",
                                 row[0],                                        // username
                                 strtol(row[1], nullptr, 10),        // friend_id
@@ -530,7 +524,7 @@ void* acceptMessage(void *arg) {
                     printf("[%s][ADD FRIEND] received for %ld -> %ld\n", buffer, senderId, receiverId);
 
                     // Validating ids
-                    if (senderId > 0 && receiverId > 0) {
+                    if (senderId > 0 && receiverId > 0 && senderId != receiverId) {
 
                         // Attempting request save
                         if (sendFriendRequest(senderId, receiverId)) {
@@ -601,22 +595,23 @@ void* acceptMessage(void *arg) {
             else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
 
                 // Splitting user data
-                char *parts[2] = {0};
+                char *parts[3] = {0};
                 int count = 0;
                 char *token = strtok(fullMessage + 15, "\x1E");
-                while (token && count < 2) {
+                while (token && count < 3) {
                     parts[count++] = token;
                     token = strtok(nullptr, "\x1E");
                 }
 
                 // Validating syntax
-                if (count == 2) {
+                if (count == 3) {
                     long userId = strtol(parts[0], nullptr, 10);
                     long friendId = strtol(parts[1], nullptr, 10);
+                    int offset = atoi(parts[2]);
                     printf("[%s][GET CHAT HISTORY] Received history request from %ld with %ld\n", buffer, userId, friendId);
 
                     if (userId == currC->userId && friendId > 0) {
-                        getChatHistory(userId, friendId, sock, currC);
+                        getChatHistory(userId, friendId, sock, offset, currC);
                     }
                 }
             }
@@ -626,8 +621,21 @@ void* acceptMessage(void *arg) {
                 long uid = strtol(fullMessage + 10, nullptr, 10);
                 if (uid <= 0) { snprintf(response, sizeof(response), "getAvatar/badformat"); goto nextMessage; }
                 printf("[%s][GET AVATAR] requested %ld's avatar\n", buffer, uid);
-                char filepath[256];
-                snprintf(filepath, sizeof(filepath), "avatars/%ld.png", uid);
+
+                // Getting current folder
+                char binary_path[PATH_MAX] = {0};
+                char avatars_dir[PATH_MAX] = {0};
+                ssize_t len = readlink("/proc/self/exe", binary_path, sizeof(binary_path)-1);
+                if (len > 0) {
+                    binary_path[len] = '\0';
+                    snprintf(avatars_dir, sizeof(avatars_dir), "%s/avatars", dirname(binary_path));
+                } else {
+                    strcpy(avatars_dir, "avatars");
+                }
+                // Creating a folder if does not exist
+                mkdir(avatars_dir, 0755);
+                char filepath[PATH_MAX];
+                snprintf(filepath, sizeof(filepath), "%s/%ld.png", avatars_dir, uid);
 
                 // Opening file
                 FILE *f = fopen(filepath, "rb");
@@ -909,5 +917,6 @@ void* acceptMessage(void *arg) {
     client_disconnect:
     unregisterClient(currC);
     free(currC);
+    close(sock);
     pthread_exit(NULL);
 }

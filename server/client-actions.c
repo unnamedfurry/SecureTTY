@@ -9,6 +9,7 @@
 // Shared variables and methods
 #include "shared-variables.h"
 extern bool sendPacket(int sock, const char *data, ClientSession *curr);
+extern bool appendf(char *buf, size_t size, size_t *off, const char *fmt, ...);
 
 // sending messages to an online client
 bool pushToUser(long userId, const char *data, ClientSession *curr) {
@@ -48,8 +49,8 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
             printf("[%s][FATAL | CLIENT UPDATES] Not enough memory for updateClient answer", buffer);
             return;
         }
-        int offset = 0;
-        offset += snprintf(response+offset, size-offset, "updateClient/messages/");
+        size_t offset = 0;
+        appendf(response, size, &offset, "updateClient/messages/");
 
         char query[512] = {0};
         snprintf(query, sizeof(query),
@@ -70,17 +71,18 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
                     totalNew += count;
 
                     if (offset < size - 1) {
-                        int written = snprintf(response + offset, size - offset,
+                        size_t written = 0;
+                        appendf(response, size, &written,
                                                "%ld\x1F%d\x1E", sender, count);
                         if (written > 0) offset += written < size - offset ? written : size - offset - 1;
                     }
                 }
                 mysql_free_result(res);
             } else {
-                offset += snprintf(response+offset, size-offset, "0\x1E");
+                appendf(response, size, &offset, "0\x1E");
             }
         } else {
-            offset += snprintf(response+offset, size-offset, "0\x1E");
+            appendf(response, size, &offset,"0\x1E");
         }
         pthread_mutex_unlock(&mysql_mutex);
         sendPacket(sock, response, curr);
@@ -95,8 +97,8 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
             printf("[%s][FATAL | CLIENT UPDATES] Not enough memory for updateClient answer\n", buffer);
             return;
         }
-        int offset = 0;
-        offset += snprintf(response+offset, size-offset, "updateClient/friendRequests\x1E");
+        size_t offset = 0;
+        appendf(response, size, &offset, "updateClient/friendRequests\x1E");
 
         char query[512] = {0};
         snprintf(query, sizeof(query),
@@ -116,7 +118,8 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
 
                 while ((row = mysql_fetch_row(res))) {
                     if (messageOffset >= (int)sizeof(message) - 1) break;
-                    int written = snprintf(message+messageOffset, sizeof(message)-messageOffset,
+                    size_t written = 0;
+                    appendf(message, sizeof(message), &written,
                         "%s\x1F%s\x1F%s\x1E",   // userId, username, profileDesc
                         row[0] ? row[0] : "0",
                         row[1] ? row[1] : "0",
@@ -132,7 +135,8 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
                 }
                 mysql_free_result(res);
 
-                int tempOffset = snprintf(response+offset, size-offset, "%s", message);
+                size_t tempOffset = 0;
+                appendf(response, size, &tempOffset, "%s", message);
                 if (tempOffset+offset > size) {
                     size+=2560;
                     char *newServerResponce = realloc(response, size);
@@ -143,10 +147,10 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
                 }
                 offset+=tempOffset;
             } else {
-                offset += snprintf(response+offset, size-offset, "0\x1E");
+                appendf(response, size, &offset, "0\x1E");
             }
         } else {
-            offset += snprintf(response+offset, size-offset, "0\x1E");
+            appendf(response, size, &offset, "0\x1E");
         }
         pthread_mutex_unlock(&mysql_mutex);
         sendPacket(sock, response, curr);
@@ -155,7 +159,7 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
     }
 }
 
-void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
+void getChatHistory(long userId, long friendId, int sock, int offset, ClientSession *curr) {
     time_t rawtime;
     struct tm *info;
     char buffer[80];
@@ -170,7 +174,7 @@ void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
         return;
     }
     memset(response, 0, bufSize);
-    int offset = snprintf(response, bufSize, "getChatHistory/%ld\x1E", friendId);
+    size_t written = 0;
 
     char query[512] = {0};
     snprintf(query, sizeof(query),
@@ -178,8 +182,8 @@ void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
         "FROM messages "
         "WHERE (senderId = %ld AND receiverId = %ld) "
            "OR (senderId = %ld AND receiverId = %ld) "
-        "ORDER BY sentAt ASC LIMIT 500",
-        userId, friendId, friendId, userId);
+        "ORDER BY sentAt ASC LIMIT 101 OFFSET %d",
+        userId, friendId, friendId, userId, offset);
 
     pthread_mutex_lock(&mysql_mutex);
     if (mysql_query(conn, query)) {
@@ -191,6 +195,8 @@ void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
     }
 
     MYSQL_RES *res = mysql_store_result(conn);
+    size_t rows = mysql_num_rows(res);
+    appendf(response, bufSize, &written, "getChatHistory/%ld%s\x1E", friendId, (rows > 100 ? "true_" : "false"));
     if (!res) {
         snprintf(response, 23, "getChatHistory/empty\x1E%ld", friendId);
         sendPacket(sock, response, curr);
@@ -200,10 +206,11 @@ void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
     }
 
     MYSQL_ROW row;
-    while ((row = mysql_fetch_row(res))) {
+    int messageCounter = 0;
+    while (((row = mysql_fetch_row(res))) && messageCounter < rows) {
         size_t needed = strlen(row[2] ? row[2] : "null") + 64;
-        if ((size_t)offset + needed >= (size_t)bufSize) {
-            while ((size_t)offset + needed >= (size_t)bufSize) bufSize += BUFFER_SIZE;
+        if (written + needed >= (size_t)bufSize) {
+            while (written + needed >= (size_t)bufSize) bufSize += BUFFER_SIZE;
             char *newResponse = realloc(response, bufSize);
             if (!newResponse) {
                 printf(RED "[%s][FATAL | GET CHAT HISTORY]" RESET " Not enough memory for getChatHistory answer\n", buffer);
@@ -218,15 +225,16 @@ void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
         long sender = strtol(row[1], nullptr, 10);
         const char *text = row[2] ? row[2] : "null";
 
-        offset += snprintf(response+offset, bufSize-offset,
+        appendf(response, bufSize, &written,
             "%ld\x1F%ld\x1F%s\x1E",
             msgId, sender, text);
+        messageCounter++;
     }
 
     mysql_free_result(res);
     pthread_mutex_unlock(&mysql_mutex);
 
-    if (offset > 32) {
+    if (written > 32) {
         sendPacket(sock, response, curr);
         printf("[%s][GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", buffer, strlen(response), userId, friendId);
     } else {
@@ -238,6 +246,7 @@ void getChatHistory(long userId, long friendId, int sock, ClientSession *curr) {
 
 bool saveUserToDB(long userId, const char *username, const char *email,
                   const char *password, const char *avatarUrl, const char *profileDesc){
+    if (strlen(username) > MAX_NAME || strlen(email) > MAX_EMAIL || strlen(password) > MAX_PASS || strlen(avatarUrl) > MAX_AVATAR || strlen(profileDesc) > MAX_DESC) return false;
     time_t rawtime;
     struct tm *info;
     char buffer[80];
@@ -268,7 +277,8 @@ bool saveUserToDB(long userId, const char *username, const char *email,
     mysql_real_escape_string(conn, esc_desc,     profileDesc, strlen(profileDesc));
 
     char query[8192];
-    int written = snprintf(query, sizeof(query),
+    size_t written = 0;
+    appendf(query, sizeof(query), &written,
         "INSERT INTO users (userId, username, email, passwordHash, avatarUrl, profileDesc) "
         "VALUES (%ld, '%s', '%s', '%s', '%s', '%s') "
         "ON DUPLICATE KEY UPDATE "
@@ -306,9 +316,7 @@ bool saveMessageToDB(long messageId, long senderId, long receiverId, const char 
     char query[4096];
     snprintf(query, sizeof(query),
         "INSERT INTO messages (messageId, senderId, receiverId, message) "
-        "VALUES (%ld, %ld, %ld, '%s') "
-        "ON DUPLICATE KEY UPDATE "
-        "message=VALUES(message)",
+        "VALUES (%ld, %ld, %ld, '%s') ",
         messageId,
         senderId,
         receiverId,

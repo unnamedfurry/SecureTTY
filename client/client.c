@@ -43,9 +43,10 @@ bool sendsMessage = false;
 bool isAddingFriend = false;
 bool loadedAvatar = false;
 bool fileSelector = false;
+long previousId = 0;
 int currentInputField = -1;
-int profilePage = 1;
 int warningTimer = 5000;
+int profilePage = 1;
 int activeField=-1;
 // Scroll
 float chatScrollOffset = 0.0f;
@@ -184,7 +185,7 @@ int FirstSetupState() {
     if (GuiTextBox((Rectangle){100, 220, 400, 40}, config.email, MAX_EMAIL, activeField==1)) {
                     activeField = (activeField == 1) ? -1 : 1;
     }
-    if (GuiTextBox((Rectangle){100, 290, 400, 40}, config.passwordHash, MAX_PASS, activeField==2)) {
+    if (GuiTextBox((Rectangle){100, 290, 400, 40}, config.password, MAX_PASS, activeField==2)) {
         activeField = (activeField == 2) ? -1 : 2;
     }
     if (GuiTextBox((Rectangle){100, 360, 400, 40}, config.profileDescription, MAX_DESC, activeField==3)) {
@@ -289,7 +290,7 @@ int MainState() {
     }
     if (loggedIn == false) {
         char msgBuf[BUFFER_SIZE] = {0};
-        snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s", config.userId, config.email, config.passwordHash);
+        snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s\x1E%s", config.userId, config.email, config.password, config.userName);
         sendMessage(msgBuf);
         loggedIn=true;
     }
@@ -524,7 +525,7 @@ int MainState() {
                     friends[i].newMessageCount = 0;
 
                     char req[96];
-                    snprintf(req, sizeof(req), "getChatHistory/%ld\x1E%ld", config.userId, friends[i].userId);
+                    snprintf(req, sizeof(req), "getChatHistory/%ld\x1E%ld\x1E%d", config.userId, friends[i].userId, messageOffset);
                     sendMessage(req);
 
                     chatAutoScrollAllowed=true;
@@ -826,6 +827,14 @@ int MainState() {
 
             Message *m = &messages[i];
 
+            if (m->messageId == previousId && previousId != 0) goto skipMessage;
+            previousId = m->messageId;
+            // TODO запросить еще больше сообщений если потянуть вверх сильнее
+            // концепта два:
+            // 1 - увеличить расстояние между первым сообщением и верхом чата и проверять если первое сообщение ниже определенной точки
+            // 2 - если скролл уперся вверх то при попытке прокрутить еще выше временно занижаем первое сообщение
+            // в конце каждого сценария сверху чата рисуем крутящийся кружочек загрузки
+
             if (m->cachedHeight == 0) {
                 // Message and bubble width
                 int maxBubbleWidth = (int)chatArea.width - 220;
@@ -891,6 +900,16 @@ int MainState() {
                 DrawWrappedText(wrapped, (Vector2){bubble.x + 20, bubble.y + 12}, font, 22, 2, mainColor);
             }
 
+            /*if (i == 0 && currentY > 120 && hasMoreMessages) {
+                static float angle = 0.0f;
+                angle += 360.0f * GetFrameTime();   // one rotation per minute
+                if (angle >= 360.0f) angle -= 360.0f;
+
+                Vector2 center = { 780, 120 };
+                // 270° = 3/4 of circle, "bitten-off" fourth part remain hidden
+                DrawRing(center, 26.0f, 30.0f, angle, angle + 270.0f, 64, WHITE);
+            }*/
+
             // Move future messages down
             currentY += (float)bubbleHeight + 18;
         }
@@ -937,6 +956,7 @@ int MainState() {
                 chatScrollOffset = (mouseRelative / 680) * chatContentHeight;
             }
         }
+        skipMessage:
     } else if (messagesCount == 0 && currentFriendId != 0) {
         // No messages in this chat yet
 
@@ -1115,9 +1135,9 @@ int ProcessingState() {
     angle += 360.0f * GetFrameTime();   // one rotation per minute
     if (angle >= 360.0f) angle -= 360.0f;
 
-    Vector2 center = { 400, 300 };
+    Vector2 center = { 780, 400 };
     // 270° = 3/4 of circle, "bitten-off" fourth part remain hidden
-    DrawRing(center, 30.0f, 40.0f, angle, angle + 270.0f, 64, WHITE);
+    DrawRing(center, 36.0f, 40.0f, angle, angle + 270.0f, 64, WHITE);
 
     return 0;
 }

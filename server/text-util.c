@@ -55,3 +55,17 @@ unsigned char* Base64Decode(const char* input, int* out_len) {
     }
     return output;
 }
+
+bool appendf(char *buf, size_t size, size_t *off, const char *fmt, ...) {
+    size_t o = *off;                          // дальше обычная арифметика
+    if (o >= size) return false;
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(buf + o, size - o, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= size - o) {
+        buf[o] = '\0';                        // откат: выбрасываем обрезанный хвост
+        return false;                         // *off не меняем
+    }
+    *off = o + (size_t)n;
+    return true;
+}

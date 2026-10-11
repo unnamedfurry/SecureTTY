@@ -24,6 +24,8 @@ else()
     set(MYSQL_LIBRARIES ${MYSQL_LIBRARY})
     set(MYSQL_INCLUDE_DIRS ${MYSQL_INCLUDE_DIR})
 endif()
+file(GLOB C_SOURCES_CLIENT CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/client_build_include/*.c)
+file(GLOB C_SOURCES_SERVER CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/server_build_include/*.c)
 
 # Compiling binaries
 add_executable(client client/client.c
@@ -45,6 +47,18 @@ add_executable(server server/server.c
                       server/client-actions.c
                       server/network-util.c
                       server/shared-variables.c)
+
+target_sources(client PRIVATE ${C_SOURCES_CLIENT})
+set_source_files_properties(${CMAKE_SOURCE_DIR}/client_build_include/blake3_sse2.c   PROPERTIES COMPILE_OPTIONS "-msse2")
+set_source_files_properties(${CMAKE_SOURCE_DIR}/client_build_include/blake3_sse41.c  PROPERTIES COMPILE_OPTIONS "-msse4.1")
+set_source_files_properties(${CMAKE_SOURCE_DIR}/client_build_include/blake3_avx2.c   PROPERTIES COMPILE_OPTIONS "-mavx2")
+set_source_files_properties(${CMAKE_SOURCE_DIR}/client_build_include/blake3_avx512.c PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512vl")
+target_sources(server PRIVATE ${C_SOURCES_SERVER})
+set_source_files_properties(${CMAKE_SOURCE_DIR}/server_build_include/blake3_sse2.c   PROPERTIES COMPILE_OPTIONS "-msse2")
+set_source_files_properties(${CMAKE_SOURCE_DIR}/server_build_include/blake3_sse41.c  PROPERTIES COMPILE_OPTIONS "-msse4.1")
+set_source_files_properties(${CMAKE_SOURCE_DIR}/server_build_include/blake3_avx2.c   PROPERTIES COMPILE_OPTIONS "-mavx2")
+set_source_files_properties(${CMAKE_SOURCE_DIR}/server_build_include/blake3_avx512.c PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512vl")
+
 # Linking libraries to binaries AUTOMATICALLY
 target_link_libraries(client PRIVATE ${RAYLIB_LIBRARIES} GL m pthread dl rt X11 Xrandr Xinerama Xi Xcursor OpenSSL::SSL OpenSSL::Crypto ${SODIUM_LIBRARIES})
 target_link_libraries(server PRIVATE m pthread OpenSSL::SSL OpenSSL::Crypto ${MYSQL_LIBRARIES} ${SODIUM_LIBRARIES})

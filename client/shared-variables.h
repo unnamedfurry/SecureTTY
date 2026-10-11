@@ -53,7 +53,7 @@ typedef struct {
     long userId;
     char userName[MAX_NAME+1];
     char email[MAX_EMAIL+1];
-    char passwordHash[crypto_pwhash_STRBYTES];
+    char password[MAX_PASS];
     char avatarUrl[MAX_AVATAR+1];
     char profileDescription[MAX_DESC+1];
 } Config;
@@ -95,12 +95,15 @@ extern bool requestedAvatarUpdate;
 extern bool hasFriendRequests;
 extern bool isUpdatedMessages;
 extern bool isUpdatedFriends;
+extern bool hasMoreMessages;
 extern bool canUploadFile;
 extern bool loggedIn;
 extern bool wrongPass;
 extern long currentFriendId;
+extern long randomMessageId;
 extern int messagesCount;
 extern int friendsCount;
+extern int messageOffset;
 
 // CRYPTO DATA
 #define SALT_SIZE crypto_pwhash_SALTBYTES
@@ -112,7 +115,6 @@ extern unsigned char clientPriv[crypto_box_SECRETKEYBYTES];
 extern char masterPassword[MAX_PASS+1];
 extern bool hasSessionKey;
 extern bool sentKeyExchange;
-extern long randomMessageId;
 
 // NETWORK DATA
 extern pthread_t thread_id;

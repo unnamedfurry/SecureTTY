@@ -264,7 +264,7 @@ void* receiveMessage(void* arg) {
                         token = strtok_r(nullptr, "\x1E", &saveptr1);
                     }
 
-                    printf("[GET FRIENDS LIST] Successfully loaded %d friends\n", friendsCount);
+                    printf("[GET FRIENDS LIST] Successfully loaded %d friends\n", friendsCount++);
                     requestedAvatarUpdate = true;
                 }
                 else if (strncmp(fullMessage, "getChatHistory/", 15) == 0) {
@@ -277,9 +277,10 @@ void* receiveMessage(void* arg) {
                     }
 
                     long friendId = strtol(fullMessage + 15, nullptr, 10);
+                    hasMoreMessages = strncmp(fullMessage + 25, "true_", 5) == 0 ? true : false;
 
                     // looking for \x1E after friend id
-                    char *historyStart = strchr(fullMessage + 15, '\x1E');
+                    char *historyStart = strchr(fullMessage + 30, '\x1E');
                     if (!historyStart) goto next; // if theres no one or packet was cursed - exiting
 
                     historyStart++; // moving a pointer a step further to skip \x1F

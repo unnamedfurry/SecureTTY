@@ -38,6 +38,7 @@ bool sendPacket(int sock, const char *data, ClientSession *curr) {
             } else {
                 printf("[%s][SEND] send() error: %s (sock=%d)\n", buffer, strerror(errno), sock);
             }
+            curr->closing=true;
             return false;
         }
         sent += (size_t)n;
