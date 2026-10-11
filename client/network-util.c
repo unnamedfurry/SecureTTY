@@ -198,13 +198,14 @@ void* receiveMessage(void* arg) {
                         LoadEncryptedConfig(&config, masterPassword);
                     }
                 }
-                else if (strncmp(fullMessage, "createId/user/", 14) == 0) {
+                else if (strncmp(fullMessage, "register/user/", 14) == 0) {
                     // Getting user from first setup
 
                     long newId = atol(fullMessage + 14);
                     if (newId > 0) {
                         // Saving value
                         config.userId = newId;
+                        loggedIn=true;
                         printf("[CREATE USER ID] Got new id from server: %ld\n", newId);
                     }
                 }

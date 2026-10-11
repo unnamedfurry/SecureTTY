@@ -7,6 +7,8 @@
 #include <sodium/crypto_pwhash.h>
 
 // Shared variables and methods
+#include <sodium/utils.h>
+
 #include "shared-variables.h"
 extern bool sendPacket(int sock, const char *data, ClientSession *curr);
 extern bool appendf(char *buf, size_t size, size_t *off, const char *fmt, ...);
@@ -71,10 +73,7 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
                     totalNew += count;
 
                     if (offset < size - 1) {
-                        size_t written = 0;
-                        appendf(response, size, &written,
-                                               "%ld\x1F%d\x1E", sender, count);
-                        if (written > 0) offset += written < size - offset ? written : size - offset - 1;
+                        if (!appendf(response, size, &offset, "%ld\x1F%d\x1E", sender, count)) break;
                     }
                 }
                 mysql_free_result(res);
@@ -114,18 +113,17 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
             if (res) {
                 MYSQL_ROW row;
                 char message[MAX_RESPONSE] = {0};
-                int messageOffset = 0;
+                size_t messageOffset = 0;
 
                 while ((row = mysql_fetch_row(res))) {
                     if (messageOffset >= (int)sizeof(message) - 1) break;
                     size_t written = 0;
-                    appendf(message, sizeof(message), &written,
+                    if (!appendf(message, sizeof(message), &messageOffset,
                         "%s\x1F%s\x1F%s\x1E",   // userId, username, profileDesc
                         row[0] ? row[0] : "0",
                         row[1] ? row[1] : "0",
                         row[2] ? row[2] : ""
-                    );
-                    if (written < 0) break;
+                    )) break;
                     messageOffset += written;
                     if (messageOffset >= (int)sizeof(message)) {
                         messageOffset = sizeof(message) - 1;
@@ -135,17 +133,7 @@ void getClientUpdates(long userId, int sock, ClientSession *curr) {
                 }
                 mysql_free_result(res);
 
-                size_t tempOffset = 0;
-                appendf(response, size, &tempOffset, "%s", message);
-                if (tempOffset+offset > size) {
-                    size+=2560;
-                    char *newServerResponce = realloc(response, size);
-                    if (newServerResponce) {
-                        response=newServerResponce;
-                        snprintf(response+offset, size-offset, "%s", message);
-                    }
-                }
-                offset+=tempOffset;
+                appendf(response, size, &offset, "%s", message);
             } else {
                 appendf(response, size, &offset, "0\x1E");
             }
@@ -182,8 +170,8 @@ void getChatHistory(long userId, long friendId, int sock, int offset, ClientSess
         "FROM messages "
         "WHERE (senderId = %ld AND receiverId = %ld) "
            "OR (senderId = %ld AND receiverId = %ld) "
-        "ORDER BY sentAt ASC LIMIT 101 OFFSET %d",
-        userId, friendId, friendId, userId, offset);
+        "ORDER BY sentAt DESC LIMIT 101 OFFSET %d",
+        userId, friendId, friendId, userId, (offset >= 0 ? offset : 0));
 
     pthread_mutex_lock(&mysql_mutex);
     if (mysql_query(conn, query)) {
@@ -195,8 +183,6 @@ void getChatHistory(long userId, long friendId, int sock, int offset, ClientSess
     }
 
     MYSQL_RES *res = mysql_store_result(conn);
-    size_t rows = mysql_num_rows(res);
-    appendf(response, bufSize, &written, "getChatHistory/%ld%s\x1E", friendId, (rows > 100 ? "true_" : "false"));
     if (!res) {
         snprintf(response, 23, "getChatHistory/empty\x1E%ld", friendId);
         sendPacket(sock, response, curr);
@@ -204,10 +190,12 @@ void getChatHistory(long userId, long friendId, int sock, int offset, ClientSess
         pthread_mutex_unlock(&mysql_mutex);
         return;
     }
+    size_t rows = mysql_num_rows(res);
+    appendf(response, bufSize, &written, "getChatHistory/%ld%s\x1E", friendId, (rows > 100 ? "true_" : "false"));
 
     MYSQL_ROW row;
     int messageCounter = 0;
-    while (((row = mysql_fetch_row(res))) && messageCounter < rows) {
+    while (((row = mysql_fetch_row(res))) && messageCounter < 100) {
         size_t needed = strlen(row[2] ? row[2] : "null") + 64;
         if (written + needed >= (size_t)bufSize) {
             while (written + needed >= (size_t)bufSize) bufSize += BUFFER_SIZE;
@@ -238,97 +226,73 @@ void getChatHistory(long userId, long friendId, int sock, int offset, ClientSess
         sendPacket(sock, response, curr);
         printf("[%s][GET CHAT HISTORY] sent %zu bytes for %ld <-> %ld\n", buffer, strlen(response), userId, friendId);
     } else {
-        snprintf(response, 23, "getChatHistory/empty\x1E%ld", friendId);
+        snprintf(response, 64, "getChatHistory/empty\x1E%ld", friendId);
         sendPacket(sock, response, curr);
     }
     free(response);
 }
 
-bool saveUserToDB(long userId, const char *username, const char *email,
-                  const char *password, const char *avatarUrl, const char *profileDesc){
-    if (strlen(username) > MAX_NAME || strlen(email) > MAX_EMAIL || strlen(password) > MAX_PASS || strlen(avatarUrl) > MAX_AVATAR || strlen(profileDesc) > MAX_DESC) return false;
-    time_t rawtime;
-    struct tm *info;
-    char buffer[80];
-    time(&rawtime);
-    info = localtime(&rawtime);
-    strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+// >0 — new userId; 0 — email is already using; -1 — error
+long registerUserInDB(const char *username, const char *email, const char *password) {
+    if (strlen(username) > MAX_NAME || strlen(email) > MAX_EMAIL ||
+        strlen(password) == 0 || strlen(password) > MAX_PASS) return -1;
 
-    char passwordHashed[crypto_pwhash_STRBYTES];
-    char esc_username[MAX_NAME*2 + 10];
-    char esc_email[MAX_EMAIL*2 + 10];
-    char esc_password[crypto_pwhash_STRBYTES*2+10];
-    char esc_avatar[MAX_AVATAR*2 + 10];
-    char esc_desc[MAX_DESC*2 + 100];
-    if (strcmp(profileDesc, "null") == 0) profileDesc="";
-    bool ok = crypto_pwhash_str(passwordHashed, password, strlen(password),
+    char hash[crypto_pwhash_STRBYTES];
+    if (crypto_pwhash_str(hash, password, strlen(password),
                               crypto_pwhash_OPSLIMIT_MODERATE,
-                              crypto_pwhash_MEMLIMIT_MODERATE) == 0;
-    if (!ok) {
-        printf("[%s][FATAL][SAVE USER TO DB] Failed to calculate pwhashed password for user %s\n", buffer, username);
-        return false;
-    }
+                              crypto_pwhash_MEMLIMIT_MODERATE) == 0) return -1;      // heavy calculations BEFORE database mutex (semafor is inside)
+
+    char esc_username[MAX_NAME*2 + 10], esc_email[MAX_EMAIL*2 + 10];
+    char esc_hash[crypto_pwhash_STRBYTES*2 + 10];
+    char query[2048];
+    long id = -1;
 
     pthread_mutex_lock(&mysql_mutex);
     mysql_real_escape_string(conn, esc_username, username, strlen(username));
     mysql_real_escape_string(conn, esc_email,    email,    strlen(email));
-    mysql_real_escape_string(conn, esc_password, passwordHashed, strlen(passwordHashed));
-    mysql_real_escape_string(conn, esc_avatar,   avatarUrl, strlen(avatarUrl));
-    mysql_real_escape_string(conn, esc_desc,     profileDesc, strlen(profileDesc));
-
-    char query[8192];
-    size_t written = 0;
-    appendf(query, sizeof(query), &written,
-        "INSERT INTO users (userId, username, email, passwordHash, avatarUrl, profileDesc) "
-        "VALUES (%ld, '%s', '%s', '%s', '%s', '%s') "
-        "ON DUPLICATE KEY UPDATE "
-        "avatarUrl=VALUES(avatarUrl), "
-        "profileDesc=VALUES(profileDesc)",
-        userId,
-        esc_username,
-        esc_email,
-        esc_password,
-        esc_avatar,
-        esc_desc);
-
-    if (written < 0 || written >= sizeof(query)) {
-        printf("[%s][SAVE USER TO DB] Query buffer too small, needed %d bytes\n", buffer, written);
-        pthread_mutex_unlock(&mysql_mutex);
-        return false;
+    mysql_real_escape_string(conn, esc_hash,     hash,     strlen(hash));
+    int n = snprintf(query, sizeof(query),
+        "INSERT INTO users (username, email, passwordHash, avatarUrl, profileDesc) "
+        "VALUES ('%s', '%s', '%s', 'null', '')",
+        esc_username, esc_email, esc_hash);
+    if (n > 0 && (size_t)n < sizeof(query)) {
+        if (mysql_query(conn, query) == 0)      id = (long)mysql_insert_id(conn);
+        else if (mysql_errno(conn) == 1062)     id = 0;     // ER_DUP_ENTRY: broken UNIQUE(email)
     }
-
-    if (mysql_query(conn, query)) {
-        printf("[%s][SAVE USER TO DB] users table error: %s\n", buffer, mysql_error(conn));
-        pthread_mutex_unlock(&mysql_mutex);
-        return false;
-    }
-
-    printf("[%s][SAVE USER TO DB] User %ld saved/updated successfully\n", buffer, userId);
     pthread_mutex_unlock(&mysql_mutex);
-    return true;
+    sodium_memzero(hash, sizeof hash);
+    return id;
+}
+bool updateProfileInDB(long userId, const char *avatarUrl, const char *profileDesc) {
+    if (strlen(avatarUrl) > MAX_AVATAR || strlen(profileDesc) > MAX_DESC) return false;
+    char esc_avatar[MAX_AVATAR*2 + 10], esc_desc[MAX_DESC*2 + 100], query[4096];
+
+    pthread_mutex_lock(&mysql_mutex);
+    mysql_real_escape_string(conn, esc_avatar, avatarUrl,   strlen(avatarUrl));
+    mysql_real_escape_string(conn, esc_desc,   profileDesc, strlen(profileDesc));
+    int n = snprintf(query, sizeof(query),
+        "UPDATE users SET avatarUrl = '%s', profileDesc = '%s' WHERE userId = %ld",
+        esc_avatar, esc_desc, userId);
+    bool ok = n > 0 && (size_t)n < sizeof(query) && mysql_query(conn, query) == 0;
+    pthread_mutex_unlock(&mysql_mutex);
+    return ok;     // affected_rows == 0 on the same values — not an error anymore, dont check it
 }
 
-bool saveMessageToDB(long messageId, long senderId, long receiverId, const char *message) {
-    char escaped_message[ MAX_MESS*2 + 1 ];
+long saveMessageToDB(long senderId, long receiverId, const char *message) {
+    if (strlen(message) > MAX_MESS) return -1;
+    char escaped_message[MAX_MESS*2 + 1];
+    char query[4096];
+    long id = -1;
+
     pthread_mutex_lock(&mysql_mutex);
     mysql_real_escape_string(conn, escaped_message, message, strlen(message));
-
-    char query[4096];
-    snprintf(query, sizeof(query),
-        "INSERT INTO messages (messageId, senderId, receiverId, message) "
-        "VALUES (%ld, %ld, %ld, '%s') ",
-        messageId,
-        senderId,
-        receiverId,
-        escaped_message);
-
-    if (mysql_query(conn, query)) {
-        fprintf(stderr, "\n[SAVE MESSAGE TO DB] Error: %s", mysql_error(conn));
-        pthread_mutex_unlock(&mysql_mutex);
-        return false;
-    }
+    int n = snprintf(query, sizeof(query),
+        "INSERT INTO messages (senderId, receiverId, message) VALUES (%ld, %ld, '%s')",
+        senderId, receiverId, escaped_message);
+    if (n > 0 && (size_t)n < sizeof(query) && mysql_query(conn, query) == 0)
+        id = (long)mysql_insert_id(conn);        // reading new id only here under mutex
     pthread_mutex_unlock(&mysql_mutex);
-    return true;
+    return id;
 }
 
 char* getUserFromDB(long userId) {

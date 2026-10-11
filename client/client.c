@@ -43,7 +43,6 @@ bool sendsMessage = false;
 bool isAddingFriend = false;
 bool loadedAvatar = false;
 bool fileSelector = false;
-long previousId = 0;
 int currentInputField = -1;
 int warningTimer = 5000;
 int profilePage = 1;
@@ -287,12 +286,6 @@ int MainState() {
             printf("[LOAD SELF AVATAR] Current path: %s\n", avatarPathInput);
         }
         loadedAvatar=true;
-    }
-    if (loggedIn == false) {
-        char msgBuf[BUFFER_SIZE] = {0};
-        snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s\x1E%s", config.userId, config.email, config.password, config.userName);
-        sendMessage(msgBuf);
-        loggedIn=true;
     }
 
     DrawRectangleLines(1, 1, 300, 899, mainColor);
@@ -717,13 +710,11 @@ int MainState() {
     if (GuiButton((Rectangle){1241, 839, 60, 60}, "^") || IsKeyPressed(KEY_ENTER)) {
         // If message is not empty and we selected friend
         if (strlen(message)!=0 && currentFriendId>0) {
-            // Request new message id
-            sendMessage("createId/message");
             // Actually send message
             sendsMessage=true;
         }
     }
-    if (sendsMessage == true) {
+    if (sendsMessage == true && randomMessageId > 0) {
         // Preparing buffers
         message[2048]='\0';
         char parsed[BUFFER_SIZE] = {0};
@@ -827,8 +818,6 @@ int MainState() {
 
             Message *m = &messages[i];
 
-            if (m->messageId == previousId && previousId != 0) goto skipMessage;
-            previousId = m->messageId;
             // TODO запросить еще больше сообщений если потянуть вверх сильнее
             // концепта два:
             // 1 - увеличить расстояние между первым сообщением и верхом чата и проверять если первое сообщение ниже определенной точки
@@ -956,7 +945,6 @@ int MainState() {
                 chatScrollOffset = (mouseRelative / 680) * chatContentHeight;
             }
         }
-        skipMessage:
     } else if (messagesCount == 0 && currentFriendId != 0) {
         // No messages in this chat yet
 
@@ -1191,6 +1179,8 @@ int main(void) {
     GuiSetStyle(TEXTBOX, TEXT_COLOR_FOCUSED, RGBA_TO_HEX(255, 255, 255, 255));
     GuiSetStyle(TEXTBOX, TEXT_COLOR_DISABLED, RGBA_TO_HEX(255, 255, 255, 255));
     GuiSetStyle(TEXTBOX, TEXT_COLOR_PRESSED, RGBA_TO_HEX(255, 255, 255, 255));
+
+    config.userId = -1;
 
     while (!WindowShouldClose()) {
         pthread_mutex_lock(&clientStateMutex);

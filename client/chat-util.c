@@ -99,31 +99,16 @@ int UploadFile(char* filePath) {
 void* processRegistering(void *arg) {
     config.isFirstUsed = false;
 
-    // Getting new id from server
-    sendMessage("createId/user");
-    // Awaiting for response
-    for (int i = 0; i < 2500 && config.userId == 0; i++) {
-        usleep(10000);
-    }
-
-    // No user id = no further working
-    if (config.userId == 0) {
-        printf("[CREATE USER ID] Timed out while waiting ID from server. retrying\n");
-
-        // Resetting values in case user restarts app
-        connected=false;
-        config.isFirstUsed = true;
-        return nullptr;
-    }
-
     // Last preparing
     memset(config.avatarUrl, 0, MAX_AVATAR);
     strncpy(config.avatarUrl, "null", 4);
     if (strlen(config.avatarUrl)==0) strncpy(config.avatarUrl, "null", 4);
 
     char registerPacket[482] = {0};
-    snprintf(registerPacket, 482, "login/%ld\x1E%s\x1E%s\x1E%s", config.userId, config.email, config.password, config.userName);
+    snprintf(registerPacket, 482, "register/%s\x1E%s\x1E%s", config.userName, config.email, config.password);
     sendMessage(registerPacket);
+
+    while (config.userId == -1) usleep(10000);
 
     // Save and switch to main state
     SaveEncryptedConfig(&config, masterPassword, nullptr);
@@ -144,11 +129,11 @@ void* processLogin(void *arg) {
                 memset(pendingFriends, 0, sizeof(pendingFriends));
 
                 // If config has valid data we attempt login
-                if (config.isFirstUsed==false && config.userId != 0) {
+                if (config.isFirstUsed==false && config.userId != -1) {
                     char msgBuf[BUFFER_SIZE] = {0};
                     snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s\x1E%s", config.userId, config.email, config.password, config.userName);
                     sendMessage(msgBuf);
-                    loggedIn=true;
+                    while (loggedIn != true) usleep(10000);
 
                     // Checking if client established secure connection
                     // before requesting sensitive data

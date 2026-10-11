@@ -200,9 +200,9 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password, char* path2) 
         } else {
             printf("[SAVE SELF AVATAR] Failed to load image: %s\n", path2);
         }
+        memset(path2, 0, 255);
+        path2=nullptr;
     }
-    memset(path2, 0, 255);
-    path2=nullptr;
 
     // Un-encrypted variables
     unsigned char salt[SALT_SIZE] = {0};
@@ -292,11 +292,7 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password, char* path2) 
 
         char message[2048] = {0};
         snprintf(message, sizeof(message),
-                 "save-profile/%ld\x1E%s\x1E%s\x1E%s\x1E%s\x1E%s",
-                 cfg->userId,
-                 cfg->userName,
-                 cfg->email,
-                 cfg->password,
+                 "save-profile/%s\x1E%s",
                  (strcmp(cfg->avatarUrl, "") == 0 ? "null" : cfg->avatarUrl),
                  (strcmp(cfg->profileDescription, "") == 0 ? "null" : cfg->profileDescription));
 

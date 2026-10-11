@@ -79,6 +79,7 @@ void unregisterClient(ClientSession *curr) {
     strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
 
     pthread_mutex_lock(&clientsMutex);
+    close(curr->sock);
     ClientSession *c = activeClients, *prev = nullptr;
     while (c) {
         if (c == curr) {

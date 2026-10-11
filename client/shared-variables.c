@@ -29,8 +29,8 @@ bool isUpdatedMessages = false;
 bool isUpdatedFriends = false;
 bool hasMoreMessages = false;
 bool canUploadFile = false;
-bool loggedIn = false;
 bool wrongPass = false;
+bool loggedIn = false;
 long currentFriendId = 0L;
 int messagesCount = -2;
 int friendsCount = -2;
@@ -44,7 +44,7 @@ unsigned char clientPriv[crypto_box_SECRETKEYBYTES];
 char masterPassword[MAX_PASS+1] = {0};
 bool hasSessionKey = false;
 bool sentKeyExchange = false;
-long randomMessageId = 0L;
+long randomMessageId = -1L;
 
 // NETWORK DATA
 pthread_t thread_id;
