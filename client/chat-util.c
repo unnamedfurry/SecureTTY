@@ -97,21 +97,29 @@ int UploadFile(char* filePath) {
 }
 
 void* processRegistering(void *arg) {
-    config.isFirstUsed = false;
+    config->isFirstUsed = false;
 
     // Last preparing
-    memset(config.avatarUrl, 0, MAX_AVATAR);
-    strncpy(config.avatarUrl, "null", 4);
-    if (strlen(config.avatarUrl)==0) strncpy(config.avatarUrl, "null", 4);
+    memset(config->avatarUrl, 0, MAX_AVATAR);
+    strncpy(config->avatarUrl, "null", 4);
+    if (strlen(config->avatarUrl)==0) strncpy(config->avatarUrl, "null", 4);
 
     char registerPacket[482] = {0};
-    snprintf(registerPacket, 482, "register/%s\x1E%s\x1E%s", config.userName, config.email, config.password);
+    snprintf(registerPacket, 482, "register/%s\x1E%s\x1E%s", config->userName, config->email, config->password);
     sendMessage(registerPacket);
 
-    while (config.userId == -1) usleep(10000);
+    if (loginCode == -3) {
+        while (config->userId == -1) usleep(10000);
+    } else if (loginCode == -2) {
+        // taken
+        currentState = STATE_FIRST_SETUP;
+    } else if (loginCode == -1) {
+        // error
+        currentState = STATE_FIRST_SETUP;
+    }
 
     // Save and switch to main state
-    SaveEncryptedConfig(&config, masterPassword, nullptr);
+    SaveEncryptedConfig(config, masterPassword, nullptr);
     currentState=STATE_MAIN_CHAT;
 
     return nullptr;
@@ -123,15 +131,15 @@ void* processLogin(void *arg) {
         // Checking if config file exists
         if (FileExists(CONFIG_FILE)) {
             // Loading config using password user just typed
-            if (LoadEncryptedConfig(&config, masterPassword)) {
+            if (LoadEncryptedConfig(config, masterPassword)) {
                 // Zeroing all values from possible garbage
-                memset(friends, 0, sizeof(friends));
-                memset(pendingFriends, 0, sizeof(pendingFriends));
+                memset(friends, 0, sizeof(Friend) * 100);
+                memset(pendingFriends, 0, sizeof(Friend) * 100);
 
                 // If config has valid data we attempt login
-                if (config.isFirstUsed==false && config.userId != -1) {
+                if (config->isFirstUsed==false && config->userId != -1) {
                     char msgBuf[BUFFER_SIZE] = {0};
-                    snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s\x1E%s", config.userId, config.email, config.password, config.userName);
+                    snprintf(msgBuf, sizeof(msgBuf), "login/%ld\x1E%s\x1E%s\x1E%s", config->userId, config->email, config->password, config->userName);
                     sendMessage(msgBuf);
                     while (loggedIn != true) usleep(10000);
 
@@ -139,10 +147,10 @@ void* processLogin(void *arg) {
                     // before requesting sensitive data
                     if (hasSessionKey) {
                         memset(msgBuf, 0, BUFFER_SIZE);
-                        snprintf(msgBuf, sizeof(msgBuf), "getFriendsList/%ld", config.userId);
+                        snprintf(msgBuf, sizeof(msgBuf), "getFriendsList/%ld", config->userId);
                         sendMessage(msgBuf);
                         memset(msgBuf, 0, sizeof(msgBuf));
-                        snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config.userId);
+                        snprintf(msgBuf, sizeof(msgBuf), "updateClient/%ld", config->userId);
                         sendMessage(msgBuf);
                     } else {
                         // exiting the cycle and jumping to draw end
@@ -152,11 +160,11 @@ void* processLogin(void *arg) {
                 } else {
                     // Preparing app for user profile creation
                     printf(cYELLOW "[WARN]" RESET "[APP INIT] User ID is 0.\n");
-                    strcpy(config.userName, "");
-                    strcpy(config.email, "");
-                    strcpy(config.password, "");
-                    strcpy(config.profileDescription, "");
-                    config.isFirstUsed=true;
+                    strcpy(config->userName, "");
+                    strcpy(config->email, "");
+                    strcpy(config->password, "");
+                    strcpy(config->profileDescription, "");
+                    config->isFirstUsed=true;
                     currentState=STATE_FIRST_SETUP;
                 }
             } else {
@@ -164,8 +172,8 @@ void* processLogin(void *arg) {
             }
         } else {
             // Switch to fist setup directly
-            memset(friends, 0, sizeof(friends));
-            memset(pendingFriends, 0, sizeof(pendingFriends));
+            memset(friends, 0, sizeof(Friend) * 100);
+            memset(pendingFriends, 0, sizeof(Friend) * 100);
             currentState=STATE_FIRST_SETUP;
             return nullptr;
         }

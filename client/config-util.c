@@ -156,7 +156,7 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password, char* path2) 
             ImageResize(&img, 128, 128);
 
             // saving near config file
-            const char *savePath = TextFormat("avatars/%ld.png", config.userId);
+            const char *savePath = TextFormat("avatars/%ld.png", config->userId);
 
             // in case folder doesnt exist
             system("mkdir -p avatars");
@@ -165,7 +165,7 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password, char* path2) 
                 printf("[SAVE SELF AVATAR] Avatar was cropped and saved: %s\n", savePath);
 
                 // updating config
-                snprintf(config.avatarUrl, MAX_AVATAR, "avatars/%ld.png", config.userId);
+                snprintf(config->avatarUrl, MAX_AVATAR, "avatars/%ld.png", config->userId);
 
                 // refreshing texture
                 if (userAvatarTexture.id != 0) UnloadTexture(userAvatarTexture);
@@ -187,7 +187,7 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password, char* path2) 
 
                     if (b64) {
                         char response1[PACKET_SIZE];
-                        snprintf(response1, sizeof(response1), "saveAvatar/%ld\x1E%s", config.userId, b64);
+                        snprintf(response1, sizeof(response1), "saveAvatar/%ld\x1E%s", config->userId, b64);
                         sendMessage(response1);
                         free(b64);
                     }
@@ -292,7 +292,8 @@ bool SaveEncryptedConfig(Config *cfg, const char* master_password, char* path2) 
 
         char message[2048] = {0};
         snprintf(message, sizeof(message),
-                 "save-profile/%s\x1E%s",
+                 "save-profile/%ld\x1E%s\x1E%s",
+                 cfg->userId,
                  (strcmp(cfg->avatarUrl, "") == 0 ? "null" : cfg->avatarUrl),
                  (strcmp(cfg->profileDescription, "") == 0 ? "null" : cfg->profileDescription));
 

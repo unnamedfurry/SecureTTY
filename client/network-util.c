@@ -144,10 +144,10 @@ void* receiveMessage(void* arg) {
 
                         profileUpdateCode = 0;
                         printf("[SAVE PROFILE] Profile successfully saved on server\n");
-                        LoadEncryptedConfig(&config, masterPassword);
+                        LoadEncryptedConfig(config, masterPassword);
 
                         // Re-validating config
-                        if (config.userId == 0) {
+                        if (config->userId == 0) {
                             printf(cRED "[FATAL]" RESET "[SAVE PROFILE] User ID is 0, shutting down.\n");
                             exit(4);
                         }
@@ -162,17 +162,17 @@ void* receiveMessage(void* arg) {
                         int cnt2 = 0;
                         char *token2 = strtok(fullMessage+19, "\x1E");
                         while (token2 && cnt2 < 2) {
-                            parts2[cnt2++] = (token2 == NULL || strcmp(token2, "null") == 0 || strcmp(token2, "NULL") == 0) ? "" : token2;
+                            parts2[cnt2++] = (strcmp(token2, "null") == 0 || strcmp(token2, "NULL") == 0) ? "" : token2;
                             token2 = strtok(nullptr, "\x1E");
                         }
 
                         // Saving current server profile
-                        if (cnt2 > 0) snprintf(config.avatarUrl, sizeof(config.avatarUrl), "%s", parts2[0]);
-                        if (cnt2 > 1) snprintf(config.profileDescription, sizeof(config.profileDescription), "%s", parts2[1]);
+                        if (cnt2 > 0) snprintf(config->avatarUrl, sizeof(config->avatarUrl), "%s", parts2[0]);
+                        if (cnt2 > 1) snprintf(config->profileDescription, sizeof(config->profileDescription), "%s", parts2[1]);
 
                         // Attempting reload
-                        SaveEncryptedConfig(&config, masterPassword);
-                        LoadEncryptedConfig(&config, masterPassword);
+                        SaveEncryptedConfig(config, masterPassword);
+                        LoadEncryptedConfig(config, masterPassword);
 
 
                     } else if (strncmp(fullMessage+13, "badformat", 9) == 0) {
@@ -190,31 +190,60 @@ void* receiveMessage(void* arg) {
                         }
 
                         // Saving current server profile
-                        if (cnt2 > 0) snprintf(config.avatarUrl, sizeof(config.avatarUrl), "%s", parts2[0]);
-                        if (cnt2 > 1) snprintf(config.profileDescription, sizeof(config.profileDescription), "%s", parts2[1]);
+                        snprintf(config->avatarUrl, sizeof(config->avatarUrl), "%s", parts2[0]);
+                        snprintf(config->profileDescription, sizeof(config->profileDescription), "%s", parts2[1]);
 
                         // Attempting reload
-                        SaveEncryptedConfig(&config, masterPassword);
-                        LoadEncryptedConfig(&config, masterPassword);
+                        SaveEncryptedConfig(config, masterPassword);
+                        LoadEncryptedConfig(config, masterPassword);
                     }
                 }
-                else if (strncmp(fullMessage, "register/user/", 14) == 0) {
+                else if (strncmp(fullMessage, "register/", 9) == 0) {
                     // Getting user from first setup
 
-                    long newId = atol(fullMessage + 14);
+                    long newId = atol(fullMessage + 9);
                     if (newId > 0) {
                         // Saving value
-                        config.userId = newId;
+                        config->userId = newId;
                         loggedIn=true;
                         printf("[CREATE USER ID] Got new id from server: %ld\n", newId);
                     }
+                } else if (strncmp(fullMessage, "register/taken", 14) == 0) {
+                    loginCode=-2;
+                } else if (strncmp(fullMessage, "register/error", 14) == 0) {
+                    loginCode=-1;
+                } else if (strncmp(fullMessage, "login/error", 11) == 0) {
+                    loginCode=-1;
+                } else if (strncmp(fullMessage, "login/ok", 8) == 0) {
+                    loggedIn=true;
                 }
                 else if (strncmp(fullMessage, "createId/message/", 17) == 0) {
-                    // Assigning new id to current message
+                    // When we get a new id from server, we should render our previous message.
+                    // We do this by filling next message[i] slot in messages array.
+                    // Here we should check if we got valid id and if we actually expect that id in pendingMessages[i] slot
+                    // If ids are equal, we render new message, if not - reload chat from database
 
                     long newId = atol(fullMessage + 17);
                     if (newId > 0) {
-                        randomMessageId = newId;
+                        bool foundMessage = false;
+                        pthread_mutex_lock(&pendingMessageMutex);
+                        for (int i=messagesCount+10; i>0; i--) {
+                            // If ids are equal, render new message
+                            if (messages[i]->messageId == newId) {
+                                messages[i]->serversideAccepted=true;
+                                foundMessage=true;
+                                chatAutoScrollAllowed=true;
+                            }
+                        }
+                        pthread_mutex_unlock(&pendingMessageMutex);
+                        // If ids are not equal - reload from database
+                        if (foundMessage==false) {
+                            char req[96];
+                            snprintf(req, sizeof(req), "getChatHistory/%ld\x1E%ld\x1E%d", config->userId, currentFriendId, messageOffset);
+                            sendMessage(req);
+
+                            chatAutoScrollAllowed=true;
+                        }
                         printf("[CREATE MESSAGE ID] Got new id from server: %ld\n", newId);
                     }
                 }
@@ -222,8 +251,8 @@ void* receiveMessage(void* arg) {
                     printf("[GET FRIENDS LIST] Received new list from server\n");
 
                     // clearing past friends
-                    memset(pendingFriendAvatarArr, 0, sizeof(pendingFriendAvatarArr));
-                    memset(friends, 0, sizeof(friends));
+                    memset(pendingFriendAvatar, 0, sizeof(Texture2D) * 100);
+                    memset(friends, 0, sizeof(Friend) * 100);
                     friendsCount = -1;
                     isUpdatedFriends = true;
 
@@ -248,18 +277,18 @@ void* receiveMessage(void* arg) {
                         while (subtoken && field < 4) {
                             // Friend profile data
 
-                            if (field == 0) strncpy(friends[friendsCount].name, subtoken, MAX_NAME);
-                            else if (field == 1) friends[friendsCount].userId = strtol(subtoken, nullptr, 10);
-                            else if (field == 2) strncpy(friends[friendsCount].avatarUrl, subtoken, MAX_AVATAR);
-                            else if (field == 3) strncpy(friends[friendsCount].profileDescription, subtoken, MAX_DESC);
+                            if (field == 0) strncpy(friends[friendsCount]->name, subtoken, MAX_NAME);
+                            else if (field == 1) friends[friendsCount]->userId = strtol(subtoken, nullptr, 10);
+                            else if (field == 2) strncpy(friends[friendsCount]->avatarUrl, subtoken, MAX_AVATAR);
+                            else if (field == 3) strncpy(friends[friendsCount]->profileDescription, subtoken, MAX_DESC);
 
                             field++;
                             subtoken = strtok_r(nullptr, "\x1F", &saveptr2);
                         }
 
                         // Setting unread message counters
-                        if (friends[friendsCount].userId > 0) {
-                            friends[friendsCount].newMessageCount = 0;
+                        if (friends[friendsCount]->userId > 0) {
+                            friends[friendsCount]->newMessageCount = 0;
                         }
 
                         token = strtok_r(nullptr, "\x1E", &saveptr1);
@@ -321,14 +350,14 @@ void* receiveMessage(void* arg) {
                                 q = nullptr;
                             }
 
-                            if (part1 && part2 && part3 && strlen(q) > 0 && !strstr(q, "null")) {
-                                messages[messagesCount].messageId = strtol(part1, nullptr, 10);
-                                messages[messagesCount].senderId  = strtol(part2 + 1, nullptr, 10);  // +1 bc of \x1F
-                                messages[messagesCount].receiverId =
-                                    (messages[messagesCount].senderId == config.userId) ? friendId : config.userId;
+                            if (part2 && part3 && strlen(q) > 0 && !strstr(q, "null")) {
+                                messages[messagesCount]->messageId = strtol(part1, nullptr, 10);
+                                messages[messagesCount]->senderId  = strtol(part2 + 1, nullptr, 10);  // +1 bc of \x1F
+                                messages[messagesCount]->receiverId =
+                                    (messages[messagesCount]->senderId == config->userId) ? friendId : config->userId;
 
-                                strncpy(messages[messagesCount].message, q, 2048);
-                                messages[messagesCount].message[2048] = '\0';
+                                strncpy(messages[messagesCount]->message, q, 2048);
+                                messages[messagesCount]->message[2048] = '\0';
                             }
 
                             messagesCount++;
@@ -369,8 +398,8 @@ void* receiveMessage(void* arg) {
 
                         // updating new message counter badge
                         for (int i = 0; i < 100; i++) {
-                            if (friends[i].userId == senderId) {
-                                friends[i].newMessageCount++;
+                            if (friends[i]->userId == senderId) {
+                                friends[i]->newMessageCount++;
                                 break;
                             }
                         }
@@ -379,10 +408,10 @@ void* receiveMessage(void* arg) {
                         if (currentFriendId == senderId) {
                             if (messagesCount < 0) messagesCount = 0;
                             if (messagesCount < 1000000) {
-                                messages[messagesCount].messageId = msgId;
-                                messages[messagesCount].senderId = senderId;
-                                messages[messagesCount].receiverId = config.userId;
-                                strncpy(messages[messagesCount].message, text, 2048);
+                                messages[messagesCount]->messageId = msgId;
+                                messages[messagesCount]->senderId = senderId;
+                                messages[messagesCount]->receiverId = config->userId;
+                                strncpy(messages[messagesCount]->message, text, 2048);
                                 messagesCount++;
                             }
                         }
@@ -393,8 +422,8 @@ void* receiveMessage(void* arg) {
                     copy=nullptr;
                 }
                 else if (strncmp(fullMessage, "newFriendRequest/", 17) == 0) {
-                    memset(pendingFriends, 0, sizeof(pendingFriends));
-                    memset(pendingFriendAvatarArr, 0, sizeof(pendingFriendAvatarArr));
+                    memset(pendingFriends, 0, sizeof(Friend) * 100);
+                    memset(pendingFriendAvatar, 0, sizeof(Texture2D) * 100);
                     hasFriendRequests = false;
 
                     // Splitting users
@@ -422,9 +451,9 @@ void* receiveMessage(void* arg) {
 
                             // Add to pending friend requests
                             hasFriendRequests=true;
-                            pendingFriends[count].userId = strtol(parts[0], nullptr, 10);
-                            if (parts[1]) strncpy(pendingFriends[count].name, parts[1], MAX_NAME);
-                            if (parts[2]) strncpy(pendingFriends[count].profileDescription, parts[2], MAX_DESC);
+                            pendingFriends[count]->userId = strtol(parts[0], nullptr, 10);
+                            if (parts[1]) strncpy(pendingFriends[count]->name, parts[1], MAX_NAME);
+                            if (parts[2]) strncpy(pendingFriends[count]->profileDescription, parts[2], MAX_DESC);
 
                             // Get pending friend's avatar
                             char packet[64] = {0};
@@ -449,7 +478,7 @@ void* receiveMessage(void* arg) {
 
                     // clear old message counters
                     for (int i = 0; i < 100; i++) {
-                        friends[i].newMessageCount = 0;
+                        friends[i]->newMessageCount = 0;
                     }
 
                     // Splitting messages
@@ -472,8 +501,8 @@ void* receiveMessage(void* arg) {
 
                             // Display unread messages counter
                             for (int i = 0; i < 100; i++) {
-                                if (friends[i].userId == senderId) {
-                                    friends[i].newMessageCount = count;
+                                if (friends[i]->userId == senderId) {
+                                    friends[i]->newMessageCount = count;
                                     break;
                                 }
                             }
@@ -490,8 +519,8 @@ void* receiveMessage(void* arg) {
                 else if (strncmp(fullMessage, "updateClient/friendRequests", 27) == 0) {
                     printf("[FRIEND REQUESTS] Received pending requests\n");
 
-                    memset(pendingFriends, 0, sizeof(pendingFriends));
-                    memset(pendingFriendAvatarArr, 0, sizeof(pendingFriendAvatarArr));
+                    memset(pendingFriends, 0, sizeof(Friend) * 100);
+                    memset(pendingFriendAvatar, 0, sizeof(Texture2D) * 100);
                     hasFriendRequests = false;
 
                     // Splitting users
@@ -519,9 +548,9 @@ void* receiveMessage(void* arg) {
                         if (parts[0]) {
                             // Adding friend request
                             hasFriendRequests=true;
-                            pendingFriends[count].userId = strtol(parts[0], nullptr, 10);
-                            if (parts[1]) strncpy(pendingFriends[count].name, parts[1], MAX_NAME);
-                            if (parts[2]) strncpy(pendingFriends[count].profileDescription, parts[2], MAX_DESC);
+                            pendingFriends[count]->userId = strtol(parts[0], nullptr, 10);
+                            if (parts[1]) strncpy(pendingFriends[count]->name, parts[1], MAX_NAME);
+                            if (parts[2]) strncpy(pendingFriends[count]->profileDescription, parts[2], MAX_DESC);
                             count++;
                         }
 
@@ -575,12 +604,12 @@ void* receiveMessage(void* arg) {
                 }
                 else if (strncmp(fullMessage, "requestPendingFriends/", 22) == 0) {
                     char req[34] = {0};
-                    snprintf(req, 33, "requestPendingFriends/%ld", config.userId);
+                    snprintf(req, 33, "requestPendingFriends/%ld", config->userId);
                     sendMessage(req);
                 }
                 else if (strncmp(fullMessage, "requestFriendUpdate/", 20) == 0) {
                     char req[34] = {0};
-                    snprintf(req, 33, "getFriendsList/%ld", config.userId);
+                    snprintf(req, 33, "getFriendsList/%ld", config->userId);
                     sendMessage(req);
                 }
                 else if (strncmp(fullMessage, "check-space/", 12) == 0) {
@@ -765,6 +794,6 @@ bool sendBinaryMessage(unsigned char *data, uint32_t size) {
 
     free(buf);
     usleep(5000);
-    printf("[SEND] Sent binary packet: %zu bytes (encrypted: %zu)\n", size, total);
+    printf("[SEND] Sent binary packet: %u bytes (encrypted: %zu)\n", size, total);
     return true;
 }

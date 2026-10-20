@@ -8,6 +8,7 @@
 
 // Shared variables and methods
 #include <sodium/utils.h>
+#include <semaphore.h>
 
 #include "shared-variables.h"
 extern bool sendPacket(int sock, const char *data, ClientSession *curr);
@@ -232,15 +233,23 @@ void getChatHistory(long userId, long friendId, int sock, int offset, ClientSess
     free(response);
 }
 
+static sem_t g_pwhash_slots;                  // sem_init(&g_pwhash_slots, 0, 2) в main
+bool hashPassword(char out[crypto_pwhash_STRBYTES], const char *pw) {
+    sem_wait(&g_pwhash_slots);
+    bool ok = crypto_pwhash_str(out, pw, strlen(pw),
+                                crypto_pwhash_OPSLIMIT_INTERACTIVE,
+                                crypto_pwhash_MEMLIMIT_INTERACTIVE) == 0;
+    sem_post(&g_pwhash_slots);
+    return ok;
+}
+
 // >0 — new userId; 0 — email is already using; -1 — error
 long registerUserInDB(const char *username, const char *email, const char *password) {
     if (strlen(username) > MAX_NAME || strlen(email) > MAX_EMAIL ||
         strlen(password) == 0 || strlen(password) > MAX_PASS) return -1;
 
     char hash[crypto_pwhash_STRBYTES];
-    if (crypto_pwhash_str(hash, password, strlen(password),
-                              crypto_pwhash_OPSLIMIT_MODERATE,
-                              crypto_pwhash_MEMLIMIT_MODERATE) == 0) return -1;      // heavy calculations BEFORE database mutex (semafor is inside)
+    if (!hashPassword(hash, password)) return -1;     // heavy calculations BEFORE database mutex (semafor is inside)
 
     char esc_username[MAX_NAME*2 + 10], esc_email[MAX_EMAIL*2 + 10];
     char esc_hash[crypto_pwhash_STRBYTES*2 + 10];
@@ -257,7 +266,7 @@ long registerUserInDB(const char *username, const char *email, const char *passw
         esc_username, esc_email, esc_hash);
     if (n > 0 && (size_t)n < sizeof(query)) {
         if (mysql_query(conn, query) == 0)      id = (long)mysql_insert_id(conn);
-        else if (mysql_errno(conn) == 1062)     id = 0;     // ER_DUP_ENTRY: broken UNIQUE(email)
+        else if (mysql_errno(conn) == 1062)     id = 0;     // ER_DUP_ENTRY: broke UNIQUE email rule (taken)
     }
     pthread_mutex_unlock(&mysql_mutex);
     sodium_memzero(hash, sizeof hash);
@@ -266,6 +275,7 @@ long registerUserInDB(const char *username, const char *email, const char *passw
 bool updateProfileInDB(long userId, const char *avatarUrl, const char *profileDesc) {
     if (strlen(avatarUrl) > MAX_AVATAR || strlen(profileDesc) > MAX_DESC) return false;
     char esc_avatar[MAX_AVATAR*2 + 10], esc_desc[MAX_DESC*2 + 100], query[4096];
+    if (strncmp(profileDesc, "null", 4) == 0) { esc_desc[0] = ' '; esc_desc[1] = '\0'; }
 
     pthread_mutex_lock(&mysql_mutex);
     mysql_real_escape_string(conn, esc_avatar, avatarUrl,   strlen(avatarUrl));

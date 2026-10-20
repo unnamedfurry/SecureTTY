@@ -236,6 +236,8 @@ void* acceptMessage(void *arg) {
                     snprintf(response, sizeof(response), "register/error");
                     goto nextMessage;
                 } else if (newId == 0) {
+                    snprintf(response, sizeof(response), "register/taken");
+                    goto nextMessage;
                     // should we notify about email already used by another person?
                 } else if (newId > 0) {
                     snprintf(response, sizeof(response), "register/%ld", newId);
@@ -270,8 +272,8 @@ void* acceptMessage(void *arg) {
                 pthread_mutex_lock(&mysql_mutex);
                 mysql_real_escape_string(conn, esc_email,    parts[1],    strlen(parts[1]));
                 mysql_real_escape_string(conn, esc_name,     parts[3],    strlen(parts[3]));
-                char query[256];
-                snprintf(query, 256, "SELECT passwordHash FROM users WHERE userId = %ld AND email = '%s' AND name = '%s' LIMIT 1", userId, esc_email, esc_name);
+                char query[512];
+                snprintf(query, 512, "SELECT passwordHash FROM users WHERE userId = %ld AND email = '%s' AND username = '%s' LIMIT 1", userId, esc_email, esc_name);
 
                 // Fetching table with query
                 if (mysql_query(conn, query)) {
@@ -323,14 +325,17 @@ void* acceptMessage(void *arg) {
                     registerClient(userId, sock);
                     currC->loggedIn=true;
                     printf("[%s][LOGIN CLIENT] User %ld\n authorized successfully\n", buffer, userId);
+                    snprintf(response, sizeof(response), "login/ok");
                 } else {
 
                     // Closing connection
                     printf("[%s][LOGIN CLIENT] User %ld\n failed to authorize: incorrect data\n", buffer, userId);
+                    snprintf(response, sizeof(response), "login/error");
                     unregisterClient(currC);
                     close(sock);
                     free(currC);
                     currC=nullptr;
+                    goto nextMessage;
                 }
             }
 
@@ -350,16 +355,16 @@ void* acceptMessage(void *arg) {
                 printf("[%s][RECEIVE MESSAGE] Saving message: %s\n", buffer, fullMessage);
 
                 // Splitting message data
-                char *parts[4] = {0};
+                char *parts[3] = {0};
                 int count = 0;
                 char *token = strtok(fullMessage + 16, "\x1E");
-                while (token && count < 4) {
+                while (token && count < 3) {
                     parts[count++] = token;
                     token = strtok(nullptr, "\x1E");
                 }
 
                 // Validating syntax
-                if (count != 4 || parts[3] == nullptr) {
+                if (count != 3 || parts[2] == nullptr) {
                     snprintf(response, sizeof(response), "receive-message/badformat");
                     goto nextMessage;
                 }
@@ -367,8 +372,8 @@ void* acceptMessage(void *arg) {
                 // Assigning to temp variables
                 // Creating an id for a new message
 
-                long senderId = strtol(parts[1], nullptr, 10);
-                long receiverId = strtol(parts[2], nullptr, 10);
+                long senderId = strtol(parts[0], nullptr, 10);
+                long receiverId = strtol(parts[1], nullptr, 10);
 
                 // Checking for authorization
                 if (senderId != currC->userId || receiverId <= 0) {
@@ -377,13 +382,13 @@ void* acceptMessage(void *arg) {
                 }
 
                 // Saving message
-                long messageId = saveMessageToDB(senderId, receiverId, parts[3]);
+                long messageId = saveMessageToDB(senderId, receiverId, parts[2]);
                 if (messageId != -1) {
 
                     // Sending message to receiver
                     printf("[%s][RECEIVE MESSAGE] Message saved: %ld -> %ld\n", buffer, senderId, receiverId);
                     char pushPacket[BUFFER_SIZE];
-                    snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s\n", messageId, senderId, parts[3], "now");
+                    snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s\n", messageId, senderId, parts[2], "now");
                     snprintf(response, sizeof(response), "createId/message/%ld", messageId);
 
                     if (!pushToUser(receiverId, pushPacket, currC)) {

@@ -33,10 +33,10 @@ extern void* processLogin(void *arg);
 // GLOBAL VARIABLES
 Font font;
 char *path2 = nullptr;
-char newDesc[1025] = "";
-char message[2049] = "";
-char userId[15] = "";
 char avatarPathInput[512] = {0};
+char currentMessage[2049] = "";
+char newDesc[1025] = "";
+char userId[15] = "";
 bool userAgreed = false;
 bool passwordSecretMode = true;
 bool sendsMessage = false;
@@ -56,7 +56,6 @@ float friendScrollVelocity = 0.0f;
 float friendSrollFriction = 0.92f;
 float chatContentHeight = 0.0f;
 float friendContentHeight = 0.0f;
-bool chatAutoScrollAllowed = true;
 bool chatIsDraggingScrollbar = false;
 bool friendIsDraggingScrollbar = false;
 Rectangle sliderBox = {201, 601, 98, 98};
@@ -178,16 +177,16 @@ int FirstSetupState() {
     DrawTextEx(font, "Привет. Пройди настройку профиля:", (Vector2){100, 50}, 40, 3, WHITE);
 
     // Input fields
-    if (GuiTextBox((Rectangle){100, 150, 400, 40}, config.userName, MAX_NAME, activeField==0)) {
+    if (GuiTextBox((Rectangle){100, 150, 400, 40}, config->userName, MAX_NAME, activeField==0)) {
         activeField = (activeField == 0) ? -1 : 0;
     }
-    if (GuiTextBox((Rectangle){100, 220, 400, 40}, config.email, MAX_EMAIL, activeField==1)) {
+    if (GuiTextBox((Rectangle){100, 220, 400, 40}, config->email, MAX_EMAIL, activeField==1)) {
                     activeField = (activeField == 1) ? -1 : 1;
     }
-    if (GuiTextBox((Rectangle){100, 290, 400, 40}, config.password, MAX_PASS, activeField==2)) {
+    if (GuiTextBox((Rectangle){100, 290, 400, 40}, config->password, MAX_PASS, activeField==2)) {
         activeField = (activeField == 2) ? -1 : 2;
     }
-    if (GuiTextBox((Rectangle){100, 360, 400, 40}, config.profileDescription, MAX_DESC, activeField==3)) {
+    if (GuiTextBox((Rectangle){100, 360, 400, 40}, config->profileDescription, MAX_DESC, activeField==3)) {
         activeField = (activeField == 3) ? -1 : 3;
     }
 
@@ -198,9 +197,19 @@ int FirstSetupState() {
     DrawTextEx(font, "Описание профиля (опционально)", (Vector2){520, 370}, 20, 3, mainColor);
 
     // Register
-    if (GuiButton((Rectangle){100, 450, 200, 50}, "Сохранить и продолжить") || IsKeyPressed(KEY_ENTER)) {
+    if (GuiButton((Rectangle){100, 450, 200, 50}, "Зарегистрироваться")) {
 
         if (pthread_create(&thread_id, nullptr, processRegistering, nullptr) == 0) {
+            pthread_detach(thread_id);
+        } else {
+            printf("[FATAL] Failed to create register processing thread\n");
+            exit(-1);
+        }
+    }
+    // Register
+    if (GuiButton((Rectangle){200, 450, 200, 50}, "Войти")) {
+
+        if (pthread_create(&thread_id, nullptr, processLogin, nullptr) == 0) {
             pthread_detach(thread_id);
         } else {
             printf("[FATAL] Failed to create register processing thread\n");
@@ -267,19 +276,66 @@ int FirstSetupState() {
             warningTimer = 5000;
         }
     }
+    if (loginCode == -2) { // Email is already taken
+        if (warningTimer > 1) {
+            Rectangle warningRec = {1352, 16, 268, 40};
+            Color accentPlateColor = {255, 79, 79, 255};
+            Color backgroundPlateColor = {255, 157, 157, 255};
+
+            DrawRectangleRec(warningRec, backgroundPlateColor);
+            DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
+
+            // Hiding alert manually
+            if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    warningTimer=5000;
+                    loginCode=-3;
+                }
+            }
+            DrawTextEx(font, "Имейл занят", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+            warningTimer-=1;
+        } else {
+            // Hiding alert after 15 seconds
+            loginCode = -3;
+            warningTimer = 5000;
+        }
+    } else if (loginCode == -1) { // Login process returned an error
+        if (warningTimer > 1) {
+            Rectangle warningRec = {1352, 16, 268, 40};
+            Color accentPlateColor = {255, 79, 79, 255};
+            Color backgroundPlateColor = {255, 157, 157, 255};
+
+            DrawRectangleRec(warningRec, backgroundPlateColor);
+            DrawRectangleLinesEx(warningRec, 2, accentPlateColor);
+
+            // Hiding alert manually
+            if (CheckCollisionPointRec(GetMousePosition(), warningRec)) {
+                if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    warningTimer=5000;
+                    loginCode=-3;
+                }
+            }
+            DrawTextEx(font, "Плохой синтакс", (Vector2){warningRec.x+14, warningRec.y+8}, 24, 2, RED);
+            warningTimer-=1;
+        } else {
+            // Hiding alert after 15 seconds
+            loginCode = -3;
+            warningTimer = 5000;
+        }
+    }
     return 0;
 }
 
 int MainState() {
 
     // Loading self avatar
-    if (strcmp(config.avatarUrl, "null") !=0 && loadedAvatar==false) {
+    if (strcmp(config->avatarUrl, "null") !=0 && loadedAvatar==false) {
         ssize_t len = readlink("/proc/self/exe", avatarPathInput, 255);
         if (len == -1) {
             printf("[LOAD SELF AVATAR] Readlink /proc/self/exe failed\n");
             avatarPathInput[0] = '\0';
         } else {
-            strncpy(avatarPathInput, config.avatarUrl, strlen(config.avatarUrl)+len);
+            strncpy(avatarPathInput, config->avatarUrl, strlen(config->avatarUrl)+len);
             Image img = LoadImage(avatarPathInput);
             userAvatarTexture = LoadTextureFromImage(img);
             UnloadImage(img);
@@ -325,20 +381,20 @@ int MainState() {
         }
         // Username
         BeginScissorMode(1460, 100, 120, 36);
-        DrawTextEx(font, TextFormat("%s", config.userName), (Vector2){1460, 100}, 32, 1.0f, mainColor);
+        DrawTextEx(font, TextFormat("%s", config->userName), (Vector2){1460, 100}, 32, 1.0f, mainColor);
         EndScissorMode();
         DrawLine(1460, 136, 1580, 136, mainColor);
         // Description
         if (GuiTextBox((Rectangle){1320, 270, 260, 400}, newDesc, MAX_DESC, activeField==4)) {
             activeField = (activeField == 4) ? -1 : 4;
         } else {
-            DrawTextBoxed(font, config.profileDescription, (Rectangle){ 1326, 278, 248, 388 }, 20, 1.0f, mainColor);
+            DrawTextBoxed(font, config->profileDescription, (Rectangle){ 1326, 278, 248, 388 }, 20, 1.0f, mainColor);
         }
         // Copy friend invite code
         GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
         if (GuiButton((Rectangle){1320, 230, 250, 30}, "скопировать код дружбы")) {
             char copyToClipboard[13];
-            snprintf(copyToClipboard, 12, "%ld", config.userId);
+            snprintf(copyToClipboard, 12, "%ld", config->userId);
             SetClipboardText(copyToClipboard);
         }
         // Refresh profile button
@@ -349,10 +405,10 @@ int MainState() {
             // profile data but avatar too
             if (newDesc[0] != 0) {
                 newDesc[1024]='\0';
-                strcpy(config.profileDescription, newDesc);
+                strcpy(config->profileDescription, newDesc);
                 memset(newDesc, 0, sizeof(newDesc));
             }
-            SaveEncryptedConfig(&config, masterPassword, path2);
+            SaveEncryptedConfig(config, masterPassword, path2);
         }
         // Manual avatar path (will be deprecated in next version)
         /*DrawTextEx(font, "Путь к аватарке:", (Vector2){1320, 760}, 20, 2, mainColor);
@@ -507,18 +563,18 @@ int MainState() {
         isUpdatedFriends = false;
         float friendStartY = 90.0f;
 
-        for (int i=0; i<=friendsCount && i<100 && friends[i].userId != 0; i++) {
+        for (int i=0; i<=friendsCount && i<100 && friends[i]->userId != 0; i++) {
             Rectangle friendRect = { 6, friendStartY, 280, 70 };
             // Highlighting targeted profile
             if (CheckCollisionPointRec(GetMousePosition(), friendRect) && isAddingFriend==false && fileSelector==false) {
                 DrawRectangleRec(friendRect, secondary2Color);
                 // Open DM
                 if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                    currentFriendId = friends[i].userId;
-                    friends[i].newMessageCount = 0;
+                    currentFriendId = friends[i]->userId;
+                    friends[i]->newMessageCount = 0;
 
                     char req[96];
-                    snprintf(req, sizeof(req), "getChatHistory/%ld\x1E%ld\x1E%d", config.userId, friends[i].userId, messageOffset);
+                    snprintf(req, sizeof(req), "getChatHistory/%ld\x1E%ld\x1E%d", config->userId, friends[i]->userId, messageOffset);
                     sendMessage(req);
 
                     chatAutoScrollAllowed=true;
@@ -531,8 +587,8 @@ int MainState() {
             Rectangle avatarRect2 = { 12, friendStartY + 8, 56, 56 };
             // Draw avatar if friend has it,
             // draw black mirror if doesnt
-            if (friendAvatarArr[i].format != 0) {
-                DrawTexturePro(friendAvatarArr[i], (Rectangle){0, 0, 128, 128}, avatarRect2, (Vector2){0, 0}, 0.0f, WHITE);
+            if (friendAvatar[i].format != 0) {
+                DrawTexturePro(friendAvatar[i], (Rectangle){0, 0, 128, 128}, avatarRect2, (Vector2){0, 0}, 0.0f, WHITE);
             } else {
                 // 1 Deep glass base
                 DrawRectangleRec(avatarRect2, (Color){ 15, 15, 18, 240 });
@@ -557,13 +613,13 @@ int MainState() {
             }
 
             // Displaying friend name on card
-            DrawTextEx(font, friends[i].name, (Vector2){76, friendStartY + 12}, 24, 2, mainColor);
+            DrawTextEx(font, friends[i]->name, (Vector2){76, friendStartY + 12}, 24, 2, mainColor);
 
             // Unread message counter for other chats
-            if (friends[i].newMessageCount > 0) {
-                if (friends[i].userId != currentFriendId) {
+            if (friends[i]->newMessageCount > 0) {
+                if (friends[i]->userId != currentFriendId) {
                     char badge[16] = {0};
-                    snprintf(badge, sizeof(badge), "%d", friends[i].newMessageCount);
+                    snprintf(badge, sizeof(badge), "%d", friends[i]->newMessageCount);
                     int textW = MeasureText(badge, 20);
                     Rectangle badgeRect = {240, friendStartY + 12, (float)textW + 12, 24};
 
@@ -574,12 +630,12 @@ int MainState() {
             }
 
             // Displaying friend description on card
-            if (strlen(friends[i].profileDescription) > 0) {
+            if (strlen(friends[i]->profileDescription) > 0) {
                 char shortDesc[71] = {0};
-                strncpy(shortDesc, friends[i].profileDescription, 70);
+                strncpy(shortDesc, friends[i]->profileDescription, 70);
                 shortDesc[70] = '\0';
                 // Cutting long text
-                if (strlen(friends[i].profileDescription) > 30) {
+                if (strlen(friends[i]->profileDescription) > 30) {
                     // looking for last UTF-8 symbol before 30th slot
                     int pos = 30;
                     while (pos > 0 && (shortDesc[pos] & 0xC0) == 0x80) {
@@ -595,15 +651,15 @@ int MainState() {
             friendStartY += 80.0f;
 
             // Drawing friend's full profile page
-            if (profilePage == 2 && currentFriendId==friends[i].userId) {
+            if (profilePage == 2 && currentFriendId==friends[i]->userId) {
                 DrawTextEx(font, "Профиль друга", (Vector2){1350, 50}, 24, 2.0f, mainColor);
                 Rectangle avatarRect = {1320, 90, 128, 128};
                 DrawRectangleRec(avatarRect, background2Color);
 
                 // Has avatar -> draw avatar
                 // Doesnt have -> draw black mirror
-                if (friendAvatarArr[i].format != 0) {
-                    DrawTexturePro(friendAvatarArr[i], (Rectangle){0, 0, 128, 128}, avatarRect, (Vector2){0, 0}, 0.0f, WHITE);
+                if (friendAvatar[i].format != 0) {
+                    DrawTexturePro(friendAvatar[i], (Rectangle){0, 0, 128, 128}, avatarRect, (Vector2){0, 0}, 0.0f, WHITE);
                 } else {
                     // 1 Deep glass base
                     DrawRectangleRec(avatarRect, (Color){ 15, 15, 18, 240 });
@@ -629,19 +685,19 @@ int MainState() {
 
                 // Friend name
                 BeginScissorMode(1460, 100, 120, 36);
-                DrawTextEx(font, TextFormat("%s", friends[i].name), (Vector2){1460, 100}, 32, 1.0f, mainColor);
+                DrawTextEx(font, TextFormat("%s", friends[i]->name), (Vector2){1460, 100}, 32, 1.0f, mainColor);
                 EndScissorMode();
 
                 // Profile description
                 DrawLine(1460, 136, 1580, 136, mainColor);
                 DrawRectangleLines(1320, 270, 260, 400, plateColor);
-                DrawTextBoxed(font, friends[i].profileDescription, (Rectangle){ 1326, 278, 248, 388 }, 20, 1.0f, mainColor);
+                DrawTextBoxed(font, friends[i]->profileDescription, (Rectangle){ 1326, 278, 248, 388 }, 20, 1.0f, mainColor);
 
                 // Friend code copy button
                 GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
                 if (GuiButton((Rectangle){1320, 230, 250, 30}, "скопировать код дружбы")) {
                     char copyToClipboard[13];
-                    snprintf(copyToClipboard, 12, "%ld", friends[i].userId);
+                    snprintf(copyToClipboard, 12, "%ld", friends[i]->userId);
                     SetClipboardText(copyToClipboard);
                 }
                 GuiSetStyle(DEFAULT, TEXT_SIZE, 24);
@@ -662,42 +718,42 @@ int MainState() {
 
     // Update friend avatars
     if (requestedAvatarUpdate==true) {
-        for (int i = 0; i < 100 && friends[i].userId != 0; i++) {
+        for (int i = 0; i < 100 && friends[i]->userId != 0; i++) {
             // Clearing previous data
-            if (friendAvatarArr[i].id != 0) {
-                UnloadTexture(friendAvatarArr[i]);
-                friendAvatarArr[i].id = 0;
+            if (friendAvatar[i].id != 0) {
+                UnloadTexture(friendAvatar[i]);
+                friendAvatar[i].id = 0;
             }
             char avatarPath[256] = {0};
-            snprintf(avatarPath, sizeof(avatarPath), "avatars/%ld.png", friends[i].userId);
+            snprintf(avatarPath, sizeof(avatarPath), "avatars/%ld.png", friends[i]->userId);
 
             // If avatar exists - we load it
             // if not - request for current user
             if (FileExists(avatarPath)) {
                 Image img = LoadImage(avatarPath);
                 if (img.data == NULL) {
-                    printf("[LOAD FRIEND AVATAR] Couldnt load %ld's avatar with %s path\n", friends[i].userId, avatarPath);
+                    printf("[LOAD FRIEND AVATAR] Couldnt load %ld's avatar with %s path\n", friends[i]->userId, avatarPath);
                 } else {
                     // Copy image as texture into array
                     ImageResize(&img, 128, 128);
-                    friendAvatarArr[i] = LoadTextureFromImage(img);
+                    friendAvatar[i] = LoadTextureFromImage(img);
                     UnloadImage(img);
                 }
-            } else if (friends[i].triedLoadAvatar==false) {
+            } else if (friends[i]->triedLoadAvatar==false) {
 
                 // Per-friend retrying
                 char req[64] = {0};
-                snprintf(req, sizeof(req), "getAvatar/%ld", friends[i].userId);
+                snprintf(req, sizeof(req), "getAvatar/%ld", friends[i]->userId);
                 sendMessage(req);
-                printf("[AVATAR] Requested avatar for %ld\n", friends[i].userId);
-                friends[i].triedLoadAvatar=true;
+                printf("[AVATAR] Requested avatar for %ld\n", friends[i]->userId);
+                friends[i]->triedLoadAvatar=true;
             }
         }
         requestedAvatarUpdate=false;
     }
 
     // Message box
-    if (GuiTextBox((Rectangle){361, 839, 880, 60}, message, MAX_MESS, activeField==5)) {
+    if (GuiTextBox((Rectangle){361, 839, 880, 60}, currentMessage, MAX_MESS, activeField==5)) {
         activeField = (activeField == 5) ? -1 : 5;
     }
     // Add file button
@@ -709,41 +765,42 @@ int MainState() {
     // Send message button
     if (GuiButton((Rectangle){1241, 839, 60, 60}, "^") || IsKeyPressed(KEY_ENTER)) {
         // If message is not empty and we selected friend
-        if (strlen(message)!=0 && currentFriendId>0) {
+        if (strlen(currentMessage)!=0 && currentFriendId>0) {
             // Actually send message
             sendsMessage=true;
         }
     }
-    if (sendsMessage == true && randomMessageId > 0) {
-        // Preparing buffers
-        message[2048]='\0';
-        char parsed[BUFFER_SIZE] = {0};
+    if (sendsMessage == true) {
 
         // Initializing new message array
         if (messagesCount < 0) messagesCount = 0;
 
         // If buffer is not overloaded
         // and we have new message if
-        if (messagesCount < 1000000 && randomMessageId!=-1) {
+        if (messagesCount < 1000000) {
 
-            // Add message to display array
-            messages[messagesCount].messageId = randomMessageId;
-            messages[messagesCount].senderId = config.userId;
-            messages[messagesCount].receiverId = currentFriendId;
-            strncpy(messages[messagesCount].message, message, 2048);
-            messagesCount++;
+            char parsed[BUFFER_SIZE] = {0};
 
             // Send message
-            snprintf(parsed, sizeof(parsed), "receive-message/%ld\x1E%ld\x1E%ld\x1E%s", randomMessageId, config.userId, currentFriendId, message);
+            snprintf(parsed, sizeof(parsed), "receive-message/%ld\x1E%ld\x1E%s", config->userId, currentFriendId, currentMessage);
             sendMessage(parsed);
-            randomMessageId=-1;
             sendsMessage=false;
 
             // Clear after trying
-            memset(message, 0, sizeof(message));
             memset(parsed, 0, strlen(parsed));
-            chatAutoScrollAllowed=true;
-            activeField=5;
+
+            long expectedId = 0;
+            for (int i=messagesCount+10; i>0; i--) {
+                if (messages[i]->messageId > 0) {
+                    expectedId = messages[++i]->messageId+1;
+                    messages[i]->messageId = expectedId;
+                    messages[i]->senderId = config->userId;
+                    messages[i]->receiverId = currentFriendId;
+                    messages[i]->serversideAccepted=false;
+                    strncpy(messages[i]->message, currentMessage, 2048);
+                    messagesCount++;
+                }
+            }
         }
     }
 
@@ -766,16 +823,16 @@ int MainState() {
     if (GuiButton((Rectangle){260, 45, 30, 30}, "R")) {
 
         // Cleanup
-        memset(friends, 0, sizeof(friends));
+        memset(friends, 0, sizeof(Friend)*100);
 
         // Update friend list again
         char req[96] = {0};
-        snprintf(req, 96, "getFriendsList/%ld", config.userId);
+        snprintf(req, 96, "getFriendsList/%ld", config->userId);
         sendMessage(req);
 
         // Update incoming friend requests again
         memset(req, 0, 96);
-        snprintf(req, 96, "requestPendingFriends/%ld", config.userId);
+        snprintf(req, 96, "requestPendingFriends/%ld", config->userId);
         sendMessage(req);
 
         requestedAvatarUpdate=true;
@@ -790,8 +847,8 @@ int MainState() {
         // Getting friend name
         char *friendName = "НН";
         for (int k=0; k<100; k++) {
-            if (friends[k].userId == currentFriendId) {
-                friendName = friends[k].name;
+            if (friends[k]->userId == currentFriendId) {
+                friendName = friends[k]->name;
                 break;
             }
         }
@@ -816,7 +873,7 @@ int MainState() {
         // calculating only messages that doesnt have cachedHeight value
         for (int i = 0; i < messagesCount; i++) {
 
-            Message *m = &messages[i];
+            Message *m = messages[i];
 
             // TODO запросить еще больше сообщений если потянуть вверх сильнее
             // концепта два:
@@ -844,7 +901,7 @@ int MainState() {
         chatContentHeight = 0.0f;
         for (int i = 0; i < messagesCount; i++) {
 
-            chatContentHeight += (float)messages[i].cachedHeight + 18;
+            chatContentHeight += (float)messages[i]->cachedHeight + 18;
         }
 
         // Do we need scroll with chat size?
@@ -859,8 +916,8 @@ int MainState() {
         float currentY = 100 - chatScrollOffset;
 
         for (int i = 0; i < messagesCount; i++) {
-            Message *m = &messages[i];
-            bool isMine = (m->senderId == config.userId);
+            Message *m = messages[i];
+            bool isMine = (m->senderId == config->userId);
 
             int bubbleHeight = m->cachedHeight;
             int bubbleWidth = m->cachedBubbleWidth;
@@ -982,7 +1039,7 @@ int MainState() {
             if (strlen(userId) == 0) return 1;
 
             char parsed[37] = {0};
-            snprintf(parsed, sizeof(parsed), "addFriend/%ld\x1E%s", config.userId, userId);
+            snprintf(parsed, sizeof(parsed), "addFriend/%ld\x1E%s", config->userId, userId);
             sendMessage(parsed);
             printf("[SEND FRIEND REQUEST] Sent request for %s: %s\n", userId, parsed);
             hasFriendRequests=false;
@@ -999,25 +1056,25 @@ int MainState() {
 
                 // Accepting friend request
                 char packet[100];
-                snprintf(packet, sizeof(packet), "acceptFriend/%ld\x1E%ld", config.userId, targetId);
+                snprintf(packet, sizeof(packet), "acceptFriend/%ld\x1E%ld", config->userId, targetId);
                 sendMessage(packet);
                 printf("[ACCEPT FRIEND] Accepted friend request from %ld\n", targetId);
 
                 // Appending current friend to friends array
-                for (int i=0; i<100 && pendingFriends[i].userId!=0; i++) {
+                for (int i=0; i<100 && pendingFriends[i]->userId!=0; i++) {
 
                     // Finding current friend
                     char id[15] = {0};
-                    snprintf(id, 14, "%ld", pendingFriends[i].userId);
+                    snprintf(id, 14, "%ld", pendingFriends[i]->userId);
 
                     // Is this a person we need?
                     if (strncmp(userId, id, 14) == 0) {
 
                         // Appending to array
-                        pendingFriends[i].userId = 0L;
-                        memset(pendingFriends[i].avatarUrl, 0, sizeof(pendingFriends[i].avatarUrl));
-                        memset(pendingFriends[i].name, 0, sizeof(pendingFriends[i].name));
-                        memset(pendingFriends[i].profileDescription, 0, sizeof(pendingFriends[i].profileDescription));
+                        pendingFriends[i]->userId = 0L;
+                        memset(pendingFriends[i]->avatarUrl, 0, sizeof(pendingFriends[i]->avatarUrl));
+                        memset(pendingFriends[i]->name, 0, sizeof(pendingFriends[i]->name));
+                        memset(pendingFriends[i]->profileDescription, 0, sizeof(pendingFriends[i]->profileDescription));
                         memset(userId, 0, 15);
                     }
                 }
@@ -1027,7 +1084,7 @@ int MainState() {
 
         // Pending friends list
         float startY = 900/2.0f -70;
-        for (int i=0; i<100 && pendingFriends[i].userId!=0; i++) {
+        for (int i=0; i<100 && pendingFriends[i]->userId!=0; i++) {
 
             // Card base
             Rectangle friendRect = {1600.0f/2-190, startY, 380, 68};
@@ -1041,7 +1098,7 @@ int MainState() {
 
                 // Sending to add queue
                 if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-                    snprintf(userId, 14, "%ld", pendingFriends[i].userId);
+                    snprintf(userId, 14, "%ld", pendingFriends[i]->userId);
                 }
 
             } else {
@@ -1049,8 +1106,8 @@ int MainState() {
             }
 
             // Mini avatar
-            if (pendingFriendAvatarArr[i].id != 0) {
-                DrawTexturePro(pendingFriendAvatarArr[i],
+            if (pendingFriendAvatar[i].id != 0) {
+                DrawTexturePro(pendingFriendAvatar[i],
                                (Rectangle){0, 0, 54, 54},
                                avatarRect2,
                                (Vector2){0, 0}, 0.0f, WHITE);
@@ -1059,17 +1116,17 @@ int MainState() {
             }
 
             // Name
-            DrawTextEx(font, pendingFriends[i].name, (Vector2){1600.0f/2-190 + 70, startY + 12}, 24, 2, mainColor);
+            DrawTextEx(font, pendingFriends[i]->name, (Vector2){1600.0f/2-190 + 70, startY + 12}, 24, 2, mainColor);
 
             // Profile description
-            if (strlen(pendingFriends[i].profileDescription) > 0) {
+            if (strlen(pendingFriends[i]->profileDescription) > 0) {
 
                 char shortDesc[80];
-                strncpy(shortDesc, pendingFriends[i].profileDescription, 70);
+                strncpy(shortDesc, pendingFriends[i]->profileDescription, 70);
                 shortDesc[70] = '\0';
 
                 // Cutting long text
-                if (strlen(pendingFriends[i].profileDescription) > 70) {
+                if (strlen(pendingFriends[i]->profileDescription) > 70) {
                     snprintf(shortDesc + strlen(shortDesc), sizeof(shortDesc) - strlen(shortDesc), "...");
                 }
                 DrawTextEx(font, shortDesc, (Vector2){1600.0f/2-190 + 70, startY + 42}, 18, 2, secondaryColor);
@@ -1139,6 +1196,15 @@ int main(void) {
     SetTraceLogLevel(LOG_WARNING);
     SetExitKey(KEY_NULL);
 
+    config = malloc(sizeof(Config));
+    for (int i=0; i<100; i++) {
+        friends[i] = malloc(sizeof(Friend));
+        pendingFriends[i] = malloc(sizeof(Friend));
+    }
+    for (int i=0; i<1000000; i++) {
+        messages[i] = malloc(sizeof(Message));
+    }
+
     // Font measuring
     int codepoints[1024] = {0};
     int count = 0;
@@ -1180,7 +1246,7 @@ int main(void) {
     GuiSetStyle(TEXTBOX, TEXT_COLOR_DISABLED, RGBA_TO_HEX(255, 255, 255, 255));
     GuiSetStyle(TEXTBOX, TEXT_COLOR_PRESSED, RGBA_TO_HEX(255, 255, 255, 255));
 
-    config.userId = -1;
+    config->userId = -1;
 
     while (!WindowShouldClose()) {
         pthread_mutex_lock(&clientStateMutex);
@@ -1266,5 +1332,13 @@ int main(void) {
     UnloadFont(font);
     CloseAudioDevice();
     CloseWindow();
+
+    free(config);
+    free(friends);
+    free(pendingFriends);
+    free(messages);
+    free(pendingMessages);
+    free(friendAvatar);
+    free(pendingFriendAvatar);
     return 0;
 }

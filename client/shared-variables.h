@@ -57,7 +57,7 @@ typedef struct {
     char avatarUrl[MAX_AVATAR+1];
     char profileDescription[MAX_DESC+1];
 } Config;
-extern Config config;
+extern Config *config;
 
 typedef struct {
     char name[MAX_NAME+1];
@@ -67,8 +67,8 @@ typedef struct {
     int newMessageCount;
     bool triedLoadAvatar;
 } Friend;
-extern Friend friends[100];
-extern Friend pendingFriends[100];
+extern Friend *friends[100];
+extern Friend *pendingFriends[100];
 
 typedef struct {
     long messageId;
@@ -77,8 +77,10 @@ typedef struct {
     char message[2049];
     int cachedHeight;
     int cachedBubbleWidth;
+    bool serversideAccepted;
 } Message;
-extern Message messages[1000000];
+extern Message *messages[1000000];
+//extern Message *pendingMessages[100];
 
 typedef enum {
     STATE_MASTER_PASSWORD,
@@ -89,26 +91,30 @@ typedef enum {
 extern AppState currentState;
 
 extern Texture2D userAvatarTexture;
-extern Texture2D friendAvatarArr[100];
-extern Texture2D pendingFriendAvatarArr[100];
+extern Texture2D friendAvatar[100];
+extern Texture2D pendingFriendAvatar[100];
 extern bool requestedAvatarUpdate;
+extern bool chatAutoScrollAllowed;
 extern bool hasFriendRequests;
 extern bool isUpdatedMessages;
 extern bool isUpdatedFriends;
 extern bool hasMoreMessages;
+extern bool processedQueue;
 extern bool canUploadFile;
 extern bool wrongPass;
 extern bool loggedIn;
 extern long currentFriendId;
-extern long randomMessageId;
+//extern long andomMessageId;
 extern int messagesCount;
 extern int friendsCount;
 extern int messageOffset;
+extern int loginCode;
 
 // CRYPTO DATA
 #define SALT_SIZE crypto_pwhash_SALTBYTES
 #define HEADER_SIZE crypto_secretstream_xchacha20poly1305_HEADERBYTES
 extern pthread_mutex_t clientStateMutex;
+extern pthread_mutex_t pendingMessageMutex;
 extern unsigned char clientSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
 extern unsigned char clientPub[crypto_box_PUBLICKEYBYTES];
 extern unsigned char clientPriv[crypto_box_SECRETKEYBYTES];
