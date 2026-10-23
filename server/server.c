@@ -177,16 +177,21 @@ int main(void) {
     sigaction(SIGTERM, &sa, nullptr);
     sigaction(SIGHUP, &sa, nullptr);
 
-    while (!g_shutdown && g_client_count<MAX_CLIENTS) {
+    int silly_sockets_counter = 0;
+
+    while (!g_shutdown && g_client_count<MAX_CLIENTS && silly_sockets_counter<MAX_CLIENTS) {
         new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
+        silly_sockets_counter++;
         if (new_socket < 0) {
             close(new_socket);
+            silly_sockets_counter--;
             if (g_shutdown) break;
             continue;
         }
 
         int* client_sock_ptr = malloc(sizeof(int));
         if (!client_sock_ptr) {
+            silly_sockets_counter--;
             close(new_socket);
             continue;
         }
@@ -195,6 +200,7 @@ int main(void) {
         if (pthread_create(&thread_id, &attr, acceptMessage, client_sock_ptr) == 0) {
             pthread_detach(thread_id);
         } else {
+            silly_sockets_counter--;
             close(new_socket);
             free(client_sock_ptr);
         }

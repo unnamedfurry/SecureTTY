@@ -280,9 +280,6 @@ void* acceptMessage(void *arg) {
                     printf("[%s][LOGIN CLIENT] Query Error: %s\n", buffer, mysql_error(conn));
                     pthread_mutex_unlock(&mysql_mutex);
                     unregisterClient(currC);
-                    free(currC);
-                    currC = nullptr;
-                    close(sock);
                     goto client_disconnect;
                 }
                 MYSQL_RES *result = mysql_store_result(conn);
@@ -290,9 +287,6 @@ void* acceptMessage(void *arg) {
                     mysql_free_result(result);
                     pthread_mutex_unlock(&mysql_mutex);
                     unregisterClient(currC);
-                    free(currC);
-                    currC = nullptr;
-                    close(sock);
                     goto client_disconnect;
                 }
 
@@ -306,9 +300,6 @@ void* acceptMessage(void *arg) {
                     mysql_free_result(result);
                     pthread_mutex_unlock(&mysql_mutex);
                     unregisterClient(currC);
-                    free(currC);
-                    currC = nullptr;
-                    close(sock);
                     goto client_disconnect;
                 }
                 mysql_free_result(result);
@@ -332,10 +323,7 @@ void* acceptMessage(void *arg) {
                     printf("[%s][LOGIN CLIENT] User %ld\n failed to authorize: incorrect data\n", buffer, userId);
                     snprintf(response, sizeof(response), "login/error");
                     unregisterClient(currC);
-                    close(sock);
-                    free(currC);
-                    currC=nullptr;
-                    goto nextMessage;
+                    goto client_disconnect;
                 }
             }
 
@@ -907,7 +895,7 @@ void* acceptMessage(void *arg) {
     }
 
     client_disconnect:
-    unregisterClient(currC);
-    free(currC);
+    if (currC) { unregisterClient(currC); free(currC); }
+    close(sock);
     pthread_exit(NULL);
 }

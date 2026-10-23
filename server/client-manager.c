@@ -91,4 +91,5 @@ void unregisterClient(ClientSession *curr) {
     pthread_mutex_unlock(&clientsMutex);
 
     printf("[%s][NETWORK] client disconnected: userId=%ld\n", buffer, curr->userId);
+    free(curr);
 }

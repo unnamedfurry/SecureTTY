@@ -939,6 +939,10 @@ int MainState() {
                 DrawRectangleRec(bubble, bubbleColor);
                 DrawRectangleLinesEx(bubble, 2, secondary2Color);
 
+                if (m->serversideAccepted == false) {
+                    DrawRectangleRec(bubble, (Color){30, 30, 30, 30});
+                }
+
                 // Draw text in bubble
                 int maxTextWidth = ((int)chatArea.width - 220) - 40;
                 char wrapped[2048] = {0};
