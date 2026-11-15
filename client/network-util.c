@@ -24,7 +24,7 @@ extern bool LoadEncryptedConfig(Config *cfg, const char* master_password);
 extern bool SaveEncryptedConfig(Config *cfg, const char* master_password);
 extern bool DecryptPacket(const char* encrypted_packet, char* out_plaintext, size_t max_out_size);
 extern bool EncryptPacket(const char* plaintext, char* out_ciphertext, size_t max_out_size);
-extern bool EncryptPacketRaw(unsigned char* plaintext, unsigned char* out,
+extern bool EncryptBinary(unsigned char* in, size_t in_len, unsigned char* out,
                              size_t max_out_size, size_t* out_len);
 
 int timeoutConnection = 5000;
@@ -184,8 +184,8 @@ void* receiveMessage(void* arg) {
                         char *parts2[2] = {0};
                         int cnt2 = 0;
                         char *token2 = strtok(fullMessage+23, "\x1E");
-                        while (cnt2 < 2) {
-                            parts2[cnt2++] = (token2 == NULL || strcmp(token2, "null") == 0 || strcmp(token2, "NULL") == 0) ? "" : token2;
+                        while (token2 && cnt2 < 2) {
+                            parts2[cnt2++] = (strcmp(token2, "null") == 0 || strcmp(token2, "NULL") == 0) ? "" : token2;
                             token2 = strtok(nullptr, "\x1E");
                         }
 
@@ -765,19 +765,20 @@ bool sendBinaryMessage(unsigned char *data, uint32_t size) {
     // connection dropped while waiting
     if (!connected) return false;
 
-    const size_t overhead = 4 + 1 + 24 + 16;
+    //                      be   bnc:  nonce   poly1305
+    const size_t overhead = 4    + 4   + 24    + 16;
     unsigned char *buf = malloc(size + overhead);
     if (!buf) return false;
 
     size_t pkt_len = 0;
-    if (!EncryptPacketRaw(data, buf + 4, size + overhead - 4, &pkt_len)) {
+    if (!EncryptBinary(data, size, buf + 4, size + overhead - 4, &pkt_len)) {
         printf("[CRYPTO] Failed to encrypt message.\n");
         free(buf);
         return false;
     }
 
-    uint32_t be = htonl((uint32_t)pkt_len);
-    memcpy(buf, &be, 4);
+    uint32_t big_endian = htonl((uint32_t)pkt_len);
+    memcpy(buf, &big_endian, 4);
 
     size_t total = 4 + pkt_len, sent = 0;
     while (sent < total) {

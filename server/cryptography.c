@@ -47,6 +47,42 @@ bool DecryptPacket(unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_
     return true;
 }
 
+// Accepting packet "bnc:" + nonce(24) + ciphertext(len + 16)
+// Writing out in plaintext + '\0' out_len = plaintext's length
+bool DecryptBinary(unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES],
+                      const unsigned char* input, size_t in_len,
+                      unsigned char* out_plain, size_t max_out_size,
+                      size_t* out_len) {
+    if (!serverSessionKey || !input || !out_plain || max_out_size < 2) return false;
+
+    const size_t prefix_len = 4; // "bnc:"
+    const size_t nonce_len  = crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
+    const size_t abytes     = crypto_aead_xchacha20poly1305_ietf_ABYTES;
+
+    if (in_len < prefix_len + nonce_len + abytes) return false;
+
+    const unsigned char* nonce = input + prefix_len;
+    const unsigned char* ct    = nonce + nonce_len;
+    const size_t ct_len        = in_len - prefix_len - nonce_len;
+    const size_t pt_len        = ct_len - abytes;
+
+    if (pt_len + 1 > max_out_size) return false;
+
+    unsigned long long decrypted_len = 0;
+    if (crypto_aead_xchacha20poly1305_ietf_decrypt(
+            out_plain, &decrypted_len,
+            nullptr,            // nsec
+            ct, ct_len,
+            nullptr, 0,         // AD
+            nonce, serverSessionKey) != 0) {
+        return false;           // MAC did not match: wrong key or compromised packet
+    }
+
+    out_plain[decrypted_len] = '\0';
+    *out_len = (size_t)decrypted_len;
+    return true;
+}
+
 // Encrypting packet to client
 bool EncryptPacket(ClientSession *session, const char* plaintext, char* out_buffer, size_t max_size) {
     if (!session || !plaintext || !out_buffer || max_size < 2) return false;
@@ -70,7 +106,7 @@ bool EncryptPacket(ClientSession *session, const char* plaintext, char* out_buff
             (const unsigned char*)plaintext, len,
             nullptr, 0, nullptr, nonce, session->serverSessionKey) != 0) {
         return false;
-            }
+    }
 
     char nonce_b64[128], ct_b64[PACKET_SIZE/2];
     sodium_bin2base64(nonce_b64, sizeof(nonce_b64), nonce, sizeof(nonce), sodium_base64_VARIANT_ORIGINAL);

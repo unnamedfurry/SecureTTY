@@ -69,3 +69,19 @@ bool appendf(char *buf, size_t size, size_t *off, const char *fmt, ...) {
     *off = o + (size_t)n;
     return true;
 }
+
+size_t binlen(char *in_data, size_t max_length) {
+    size_t counter = 0;
+    bool shouldContinue = true;
+
+    while (shouldContinue && counter < max_length) {
+        shouldContinue=false;
+        size_t blockSize = strlen(in_data+counter);
+        counter+=blockSize;
+        for (int i=0; i<5; i++) {
+            if (in_data[counter+i] != '\0') shouldContinue=true;
+        }
+    }
+
+    return counter;
+}

@@ -43,6 +43,7 @@
 #define DEFAULT_FILE_UPLOAD_SIZE (5 * 1024 * 1024)
 #define MAX_CHUNK_SIZE (25L * 1024 * 1024)
 #define MAX_FILE_SIZE (25UL * 1024 * 1024 * 1024)
+#define MAX_AVATAR_FILE_SIZE (100 * 1024)
 
 // SERVER DATA
 extern MYSQL *conn;
@@ -62,7 +63,7 @@ typedef struct FileUpload {
     char hashHex[BLAKE3_OUT_LEN * 2 + 1];
     size_t fileSize;
     size_t chunkSize;
-    size_t read;
+    size_t read_offset;
     int steps;
     long userId;
     bool allowedToUpload;

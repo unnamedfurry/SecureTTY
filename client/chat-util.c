@@ -23,7 +23,7 @@ size_t offset = 0;
 size_t fileSize = 0;
 int steps = 1;
 int progress = 0;
-int packetSize = 5 * 1024 * 1024;
+int packetSize = 1 * 1024 * 1024;
 
 int UploadFile(char* filePath) {
 
@@ -60,13 +60,14 @@ int UploadFile(char* filePath) {
         snprintf(infoPacket, 256, "uploadFileInfo/%d/%lu/%lu/%s", steps, chunkSize, fileSize, name);
         sendMessage(infoPacket);
 
-        unsigned char *packet = malloc(15 + chunkSize);
+        unsigned char *packet = malloc(16 + chunkSize);
         if (!packet) { fclose(file); return -2; }
 
         for (int i = 0; i < steps; i++) {
             memcpy(packet, "uploadFileData/", 15);
 
-            size_t n = fread(packet + 15, 1, chunkSize, file);
+            // Read file and memcpy data to packet
+            size_t n = fread(packet + 15, chunkSize, 1, file);
             if (n == 0) break;
 
             if (!sendBinaryMessage(packet, 15 + n)) {

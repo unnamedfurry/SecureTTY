@@ -19,11 +19,13 @@
 
 // Shared variables and methods
 #include <errno.h>
+#include <netinet/in.h>
 
 #include "shared-variables.h"
 extern void registerClient(long userId, int sock);
 extern void unregisterClient(ClientSession *curr);
 extern bool DecryptPacket(unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES], const char* input, char* out_plain, size_t max_size);
+extern bool DecryptBinary(unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES], const unsigned char* input, size_t in_len, unsigned char* out_plain, size_t max_out_size, size_t* out_len);
 extern bool EncryptPacket(ClientSession *session, const char* plaintext, char* out_buffer, size_t max_size);
 extern bool sendPacket(int sock, const char *data, ClientSession *curr);
 extern char* Base64Encode(const unsigned char* input, int length);
@@ -41,6 +43,7 @@ extern char* getUserFromDB(long userId);
 extern bool sendFriendRequest(long senderId, long receiverId);
 extern bool acceptFriendRequest(long receiverId, long senderId);
 
+int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], int totalReceived, uint32_t n);
 void* acceptMessage(void *arg) {
     int sock = *(int*)arg;
     free(arg);
@@ -61,14 +64,14 @@ void* acceptMessage(void *arg) {
         int bytes = read(sock, localBuf, sizeof(localBuf) - 1);
         time_t rawtime;
         struct tm *info;
-        char buffer[80];
+        char time_formatted[80];
         time(&rawtime);
         info = localtime(&rawtime);
-        strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", info);
+        strftime(time_formatted, 80, "%Y-%m-%d %H:%M:%S", info);
 
         // Validating syntax
         if (bytes <= 0) {
-            printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Client disconnected (sock %d)\n", buffer, id, sock);
+            printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Client disconnected (sock %d)\n", time_formatted, id, sock);
             goto client_disconnect;
         }
 
@@ -81,6 +84,15 @@ void* acceptMessage(void *arg) {
         memcpy(recvBuf + totalReceived, localBuf, bytes);
         totalReceived += bytes;
         recvBuf[totalReceived] = '\0';
+
+        if (totalReceived >= 8 && strncmp(recvBuf+4, "bnc:", 4) == 0) {
+            uint32_t n = 0;
+            memcpy(&n, recvBuf, 4);
+            n = ntohl(n);
+            if (totalReceived < n) continue; // not enough data yet
+
+            processBinary(currC, currF, sock, time_formatted, recvBuf, fullMessage, totalReceived, n);
+        }
 
         // multiple newline-separated messages might arrive in a single read() —
         // parse everything that has accumulated in recvBuf, not just the first one
@@ -127,7 +139,6 @@ void* acceptMessage(void *arg) {
                 pthread_mutex_unlock(&filesMutex);
             }
 
-            //if (currC->closing==true) goto client_disconnect;
 
 
             //
@@ -213,7 +224,7 @@ void* acceptMessage(void *arg) {
                 currC->hasSessionKey=true;
             }
 
-            printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Client said (full message, %zu bytes): %s\n", buffer, id, msgLen, fullMessage);
+            printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Client said (full message, %zu bytes): %s\n", time_formatted, id, msgLen, fullMessage);
 
             if (strncmp(fullMessage, "register/", 9) == 0 && !currC->loggedIn) {
                 // Splitting login data
@@ -226,8 +237,8 @@ void* acceptMessage(void *arg) {
                 }
 
                 // Validating syntax
-                if (count != 3) {
-                    printf("[%s][LOGIN] Not enough parameters for login\n", buffer);
+                if (count != 3 || strlen(parts[1]) > MAX_EMAIL || strlen(parts[0]) > MAX_NAME || strlen(parts[2]) > MAX_PASS) {
+                    printf("[%s][LOGIN] Not enough parameters for login\n", time_formatted);
                     goto nextMessage;
                 }
 
@@ -243,7 +254,7 @@ void* acceptMessage(void *arg) {
                     snprintf(response, sizeof(response), "register/%ld", newId);
                     registerClient(newId, sock);
                     currC->loggedIn=true;
-                    printf("[%s][REGISTER CLIENT] User %ld\n authorized successfully\n", buffer, newId);
+                    printf("[%s][REGISTER CLIENT] User %ld\n authorized successfully\n", time_formatted, newId);
                     goto nextMessage;
                 }
             }
@@ -259,8 +270,8 @@ void* acceptMessage(void *arg) {
                 }
 
                 // Validating syntax
-                if (count != 4) {
-                    printf("[%s][LOGIN] Not enough parameters for login\n", buffer);
+                if (count != 4 || strlen(parts[1]) > MAX_EMAIL || strlen(parts[3]) > MAX_NAME || strlen(parts[2]) > MAX_PASS) {
+                    printf("[%s][LOGIN] Not enough parameters for login\n", time_formatted);
                     goto nextMessage;
                 }
 
@@ -277,7 +288,7 @@ void* acceptMessage(void *arg) {
 
                 // Fetching table with query
                 if (mysql_query(conn, query)) {
-                    printf("[%s][LOGIN CLIENT] Query Error: %s\n", buffer, mysql_error(conn));
+                    printf("[%s][LOGIN CLIENT] Query Error: %s\n", time_formatted, mysql_error(conn));
                     pthread_mutex_unlock(&mysql_mutex);
                     unregisterClient(currC);
                     goto client_disconnect;
@@ -296,7 +307,7 @@ void* acceptMessage(void *arg) {
                     strncpy(password, row[0], sizeof(password) - 1);
                 } else {
                     // Closing connection
-                    printf("[%s][LOGIN CLIENT] No matching user found.\n", buffer);
+                    printf("[%s][LOGIN CLIENT] No matching user found.\n", time_formatted);
                     mysql_free_result(result);
                     pthread_mutex_unlock(&mysql_mutex);
                     unregisterClient(currC);
@@ -309,18 +320,18 @@ void* acceptMessage(void *arg) {
                 bool ok = false;
                 if (strlen(password) > 0) ok = crypto_pwhash_str_verify(password, parts[2], strlen(parts[2])) == 0;
 
-                printf("[%s][LOGIN CLIENT] Received for client/user %ld\n", buffer, userId);
+                printf("[%s][LOGIN CLIENT] Received for client/user %ld\n", time_formatted, userId);
                 if (userId > 0 && ok == true) {
 
                     // Authorizing client
                     registerClient(userId, sock);
                     currC->loggedIn=true;
-                    printf("[%s][LOGIN CLIENT] User %ld\n authorized successfully\n", buffer, userId);
+                    printf("[%s][LOGIN CLIENT] User %ld\n authorized successfully\n", time_formatted, userId);
                     snprintf(response, sizeof(response), "login/ok");
                 } else {
 
                     // Closing connection
-                    printf("[%s][LOGIN CLIENT] User %ld\n failed to authorize: incorrect data\n", buffer, userId);
+                    printf("[%s][LOGIN CLIENT] User %ld\n failed to authorize: incorrect data\n", time_formatted, userId);
                     snprintf(response, sizeof(response), "login/error");
                     unregisterClient(currC);
                     goto client_disconnect;
@@ -335,12 +346,12 @@ void* acceptMessage(void *arg) {
 
             // Checking for secured channel
             if (currC->loggedIn==false || currC->hasSessionKey==false || decryptedState==false) {
-                printf(RED "[%s][RECEIVE MESSAGE]" RESET " %d attempted unauthorized action\n", buffer, sock);
+                printf(RED "[%s][RECEIVE MESSAGE]" RESET " %d attempted unauthorized action\n", time_formatted, sock);
                 goto nextMessage;
             }
 
             if (strncmp(fullMessage, "receive-message/", 16) == 0) {
-                printf("[%s][RECEIVE MESSAGE] Saving message: %s\n", buffer, fullMessage);
+                printf("[%s][RECEIVE MESSAGE] Saving message: %s\n", time_formatted, fullMessage);
 
                 // Splitting message data
                 char *parts[3] = {0};
@@ -374,16 +385,16 @@ void* acceptMessage(void *arg) {
                 if (messageId != -1) {
 
                     // Sending message to receiver
-                    printf("[%s][RECEIVE MESSAGE] Message saved: %ld -> %ld\n", buffer, senderId, receiverId);
+                    printf("[%s][RECEIVE MESSAGE] Message saved: %ld -> %ld\n", time_formatted, senderId, receiverId);
                     char pushPacket[BUFFER_SIZE];
                     snprintf(pushPacket, sizeof(pushPacket), "newMessage\x1E%ld\x1F%ld\x1F%s\x1F%s\n", messageId, senderId, parts[2], "now");
                     snprintf(response, sizeof(response), "createId/message/%ld", messageId);
 
                     if (!pushToUser(receiverId, pushPacket, currC)) {
-                        printf("[%s][RECEIVE MESSAGE] Receiver %ld is offline, message will be saved to DB\n", buffer, receiverId);
+                        printf("[%s][RECEIVE MESSAGE] Receiver %ld is offline, message will be saved to DB\n", time_formatted, receiverId);
                     }
                 } else {
-                    printf("[%s][RECEIVE MESSAGE] Failed to save message to db: %ld, %ld\n", buffer, senderId, messageId);
+                    printf("[%s][RECEIVE MESSAGE] Failed to save message to db: %ld, %ld\n", time_formatted, senderId, messageId);
                     snprintf(response, sizeof(response), "receive-message/error");
                 }
             }
@@ -410,7 +421,7 @@ void* acceptMessage(void *arg) {
                     }
 
                     // Saving profile
-                    printf("[%s][SAVE PROFILE] received for %ld\n", buffer, uid);
+                    printf("[%s][SAVE PROFILE] received for %ld\n", time_formatted, uid);
                     bool success = updateProfileInDB(uid, parts[1], parts[2]);
 
                     if (success) {
@@ -429,8 +440,10 @@ void* acceptMessage(void *arg) {
 
                     // Reporting error to client
                     snprintf(response, sizeof(response), "save-profile/badformat/");
+                    if (parts[0] == nullptr) goto nextMessage;
+
                     long uid = strtol(parts[0], nullptr, 10);
-                    if (parts[0] && uid == currC->userId) {
+                    if (uid == currC->userId) {
                         char *profile = getUserFromDB(uid);
                         if (profile) {
                             snprintf(response+23, sizeof(response)-24, "%s", profile);
@@ -478,7 +491,7 @@ void* acceptMessage(void *arg) {
                 if (offset > 15) {
                     // if there is atleast one friend
 
-                    printf("[%s][GET FRIENDS LIST] Sent for %ld\n", buffer, userId);
+                    printf("[%s][GET FRIENDS LIST] Sent for %ld\n", time_formatted, userId);
                 } else {
                     snprintf(response, sizeof(response), "getFriendsList/empty");
                 }
@@ -501,7 +514,7 @@ void* acceptMessage(void *arg) {
                     long senderId = strtol(parts[0], nullptr, 10);
                     long receiverId = strtol(parts[1], nullptr, 10);
                     if (senderId != currC->userId) { snprintf(response, sizeof(response), "addFriend/unauthorized"); goto nextMessage; }
-                    printf("[%s][ADD FRIEND] received for %ld -> %ld\n", buffer, senderId, receiverId);
+                    printf("[%s][ADD FRIEND] received for %ld -> %ld\n", time_formatted, senderId, receiverId);
 
                     // Validating ids
                     if (senderId > 0 && receiverId > 0 && senderId != receiverId) {
@@ -511,23 +524,23 @@ void* acceptMessage(void *arg) {
 
                             // Pushing update request to receiver
                             pushToUser(receiverId, "requestPendingFriends/", currC);
-                            printf("[%s][ADD FRIEND] Sent successfully %ld -> %ld\n", buffer, senderId, receiverId);
+                            printf("[%s][ADD FRIEND] Sent successfully %ld -> %ld\n", time_formatted, senderId, receiverId);
                         } else {
 
                             // Reporting error to sender
-                            printf("[%s][ADD FRIEND] Failed to save request\n", buffer);
+                            printf("[%s][ADD FRIEND] Failed to save request\n", time_formatted);
                             strncpy(response, "addFriend/error", 16);
                         }
                     } else {
 
                         // Reporting error to sender
-                        printf("[%s][ADD FRIEND] Bad ID\n", buffer);
+                        printf("[%s][ADD FRIEND] Bad ID\n", time_formatted);
                         strncpy(response, "addFriend/error", 16);
                     }
                 } else {
 
                     // Reporting error to sender
-                    printf("[%s][ADD FRIEND] Bad format, got %d/2 parts\n", buffer, count);
+                    printf("[%s][ADD FRIEND] Bad format, got %d/2 parts\n", time_formatted, count);
                     strncpy(response, "addFriend/badformat", 20);
                 }
             }
@@ -565,7 +578,7 @@ void* acceptMessage(void *arg) {
 
                 // Getting updates
                 long userId = strtol(fullMessage + 13, nullptr, 10);
-                printf("[%s][UPDATE CLIENT] Received for client/user %ld\n", buffer, userId);
+                printf("[%s][UPDATE CLIENT] Received for client/user %ld\n", time_formatted, userId);
                 if (userId == currC->userId) {
                     getClientUpdates(userId, sock, currC);
                 } else {
@@ -588,7 +601,7 @@ void* acceptMessage(void *arg) {
                     long userId = strtol(parts[0], nullptr, 10);
                     long friendId = strtol(parts[1], nullptr, 10);
                     int offset = atoi(parts[2]);
-                    printf("[%s][GET CHAT HISTORY] Received history request from %ld with %ld\n", buffer, userId, friendId);
+                    printf("[%s][GET CHAT HISTORY] Received history request from %ld with %ld\n", time_formatted, userId, friendId);
 
                     if (userId == currC->userId && friendId > 0) {
                         getChatHistory(userId, friendId, sock, offset, currC);
@@ -600,22 +613,22 @@ void* acceptMessage(void *arg) {
                 // Validating syntax
                 long uid = strtol(fullMessage + 10, nullptr, 10);
                 if (uid <= 0) { snprintf(response, sizeof(response), "getAvatar/badformat"); goto nextMessage; }
-                printf("[%s][GET AVATAR] requested %ld's avatar\n", buffer, uid);
+                printf("[%s][GET AVATAR] requested %ld's avatar\n", time_formatted, uid);
 
                 // Getting current folder
-                char binary_path[PATH_MAX] = {0};
-                char avatars_dir[PATH_MAX] = {0};
-                ssize_t len = readlink("/proc/self/exe", binary_path, sizeof(binary_path)-1);
+                char self_path[PATH_MAX] = {0};
+                char avatars_subdir[PATH_MAX] = {0};
+                ssize_t len = readlink("/proc/self/exe", self_path, sizeof(self_path)-1);
                 if (len > 0) {
-                    binary_path[len] = '\0';
-                    snprintf(avatars_dir, sizeof(avatars_dir), "%s/avatars", dirname(binary_path));
+                    self_path[len] = '\0';
+                    snprintf(avatars_subdir, sizeof(avatars_subdir), "%s/avatars", dirname(self_path));
                 } else {
-                    strcpy(avatars_dir, "avatars");
+                    strcpy(avatars_subdir, "avatars");
                 }
                 // Creating a folder if does not exist
-                mkdir(avatars_dir, 0755);
+                mkdir(avatars_subdir, 0755);
                 char filepath[PATH_MAX];
-                snprintf(filepath, sizeof(filepath), "%s/%ld.png", avatars_dir, uid);
+                snprintf(filepath, sizeof(filepath), "%s/%ld.png", avatars_subdir, uid);
 
                 // Opening file
                 FILE *f = fopen(filepath, "rb");
@@ -626,7 +639,7 @@ void* acceptMessage(void *arg) {
                     long fileSize = ftell(f);
                     fseek(f, 0, SEEK_SET);
 
-                    if (fileSize <= 0 || fileSize > PACKET_SIZE) {
+                    if (fileSize <= 0 || fileSize > MAX_AVATAR_FILE_SIZE) {
                         fclose(f);
                         snprintf(response, sizeof(response), "getAvatar/error");
                         goto nextMessage;
@@ -652,12 +665,12 @@ void* acceptMessage(void *arg) {
                         // Sending packet
                         snprintf(response, PACKET_SIZE, "getAvatarResponse/%ld\x1E%s", uid, b64);
                         free(b64);
-                        printf("[%s][GET AVATAR] sent avatar for %ld (%ld bytes)\n", buffer, uid, fileSize);
+                        printf("[%s][GET AVATAR] sent avatar for %ld (%ld bytes)\n", time_formatted, uid, fileSize);
                     }
                 } else {
                     // Sending null
                     snprintf(response, sizeof(response), "getAvatarResponse/%ld\x1E", uid);
-                    printf("[%s][GET AVATAR] %ld's avatar not found\n", buffer,uid);
+                    printf("[%s][GET AVATAR] %ld's avatar not found\n", time_formatted,uid);
                 }
             }
             else if (strncmp(fullMessage, "saveAvatar/", 11) == 0) {
@@ -667,24 +680,27 @@ void* acceptMessage(void *arg) {
 
                 // Checking for authorization
                 if (userId != currC->userId || *ptr != '\x1E') {
-                    printf("[%s][SAVE AVATAR] Parse error: invalid userId or missing separator\n", buffer);
-                    printf("[%s][SAVE AVATAR] Received: %.100s...\n", buffer, fullMessage);
+                    printf("[%s][SAVE AVATAR] Parse error: invalid userId or missing separator\n", time_formatted);
+                    printf("[%s][SAVE AVATAR] Received: %.100s...\n", time_formatted, fullMessage);
                     snprintf(response, sizeof(response), "saveAvatar/unauthorized");
                     goto nextMessage;
                 }
 
                 char *b64_data = ptr + 1; // base64 start
                 if (strlen(b64_data) < 100) {
-                    printf("[%s][SAVE AVATAR] Base64 data too short (%zu chars)\n", buffer, strlen(b64_data));
+                    printf("[%s][SAVE AVATAR] Base64 data too short (%zu chars)\n", time_formatted, strlen(b64_data));
                 }
 
                 // Decoding text
                 int decoded_len = 0;
                 unsigned char* png_data = Base64Decode(b64_data, &decoded_len);
 
-                if (!png_data || decoded_len < 500) { // minimal PNG size
-                    printf("[%s][SAVE AVATAR] Decode failed or image too small (%d bytes)\n", buffer, decoded_len);
+                if (!png_data || decoded_len < 500 || decoded_len > MAX_AVATAR_FILE_SIZE ||
+                    memcmp(png_data, "\x89PNG\r\n\x1a\n", 8) != 0) {
+
                     free(png_data);
+                    snprintf(response, sizeof(response), "saveAvatar/error");
+                    printf("[%s][SAVE AVATAR] Decode failed or image too small (%d bytes)\n", time_formatted, decoded_len);
                     goto nextMessage;
                 }
 
@@ -716,15 +732,15 @@ void* acceptMessage(void *arg) {
                             png_data[0] == 0x89 && png_data[1] == 'P' &&
                             png_data[2] == 'N' && png_data[3] == 'G') {
 
-                            printf("[%s][SAVE AVATAR] Good PNG signature, saved %ld's avatar successfully (%d bytes)\n", buffer, userId, decoded_len);
+                            printf("[%s][SAVE AVATAR] Good PNG signature, saved %ld's avatar successfully (%d bytes)\n", time_formatted, userId, decoded_len);
                         } else {
-                            printf("[%s][SAVE AVATAR] Bad PNG signature, saved possibly corrupted %ld's avatar\n" RESET, buffer, userId);
+                            printf("[%s][SAVE AVATAR] Bad PNG signature, saved possibly corrupted %ld's avatar\n" RESET, time_formatted, userId);
                         }
                     } else {
-                        printf("[%s][SAVE AVATAR] Write error: only %zu of %d bytes written\n", buffer, written, decoded_len);
+                        printf("[%s][SAVE AVATAR] Write error: only %zu of %d bytes written\n", time_formatted, written, decoded_len);
                     }
                 } else {
-                    printf("[%s][SAVE AVATAR] fopen failed: %s", buffer, filepath);
+                    printf("[%s][SAVE AVATAR] fopen failed: %s", time_formatted, filepath);
                 }
 
                 free(png_data);
@@ -788,7 +804,7 @@ void* acceptMessage(void *arg) {
                     offset += snprintf(response+offset, size-offset, "0\x1E");
                 }
                 pthread_mutex_unlock(&mysql_mutex);
-                printf("[%s][GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", buffer, userId, response);
+                printf("[%s][GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", time_formatted, userId, response);
             } else if (strncmp(fullMessage, "check-space/", 12) == 0) {
 
                 const char *p = fullMessage + 12;
@@ -810,11 +826,11 @@ void* acceptMessage(void *arg) {
                 pthread_mutex_unlock(&filesMutex);
                 snprintf(response, sizeof(response), ok ? "check-space/allowed" : "check-space/prohibited");
             }
-            else if (strncmp(fullMessage, "uploadFileData/", 15) == 0) {
+            else if (strncmp(fullMessage, "uploadFileInfo/", 15) == 0) {
 
                 // Checking secure connection state
-                if (currF != nullptr || currF->allowedToUpload==false || currF->userId!=currentUserId) {
-                    printf(RED "[%s][PREPARE FILE DOWNLOAD]" RESET " %d attempted unauthorized file saving\n", buffer, sock);
+                if (currF == nullptr || currF->allowedToUpload==false || currF->userId!=currentUserId) {
+                    printf(RED "[%s][PREPARE FILE DOWNLOAD]" RESET " %d attempted unauthorized file saving\n", time_formatted, sock);
                     goto nextMessage;
                 }
 
@@ -824,18 +840,18 @@ void* acceptMessage(void *arg) {
                 char *saveptr = nullptr;
 
                 char *token = strtok_r(fullMessage + 15, "/", &saveptr);
-                while (token && count < 3) {          // first 3 numbers
+                while (token && count < 3) {          // first 3 numbers (steps, chunkSize and fileSize)
                     parts[count++] = token;
                     token = strtok_r(nullptr, "/", &saveptr);
                 }
-                // the only thing left is name
+                // the only thing left is fileName
                 if (count == 3 && saveptr && *saveptr != '\0') {
                     parts[3] = saveptr;
                     count = 4;
                 }
 
                 if (count != 4) {
-                    printf(RED "[%s][UPLOAD]" RESET " %d sent malformed uploadFileData\n", buffer, sock);
+                    printf(RED "[%s][UPLOAD]" RESET " %d sent malformed uploadFileData\n", time_formatted, sock);
                     goto nextMessage;
                 }
 
@@ -860,7 +876,10 @@ void* acceptMessage(void *arg) {
                 size_t nameLen = strlen(parts[3]);
                 if (nameLen == 0 || nameLen >= sizeof(currF->name) ||
                     strchr(parts[3], '/') || strchr(parts[3], '\\') ||
-                    strstr(parts[3], "..")) goto badParams;
+                    strstr(parts[3], "..")) {
+                    currF->allowedToUpload=false;
+                    goto badParams;
+                }
 
                 pthread_mutex_lock(&filesMutex);
                 currF->steps = (int)steps;
@@ -871,14 +890,15 @@ void* acceptMessage(void *arg) {
                 goto nextMessage;
 
                 badParams:
-                printf(RED "[%s][UPLOAD]" RESET " %d sent invalid upload parameters\n", buffer, sock);
+                printf(RED "[%s][UPLOAD]" RESET " %d sent invalid upload parameters\n", time_formatted, sock);
+                snprintf(response, sizeof(response), "uploadFileInfo/banned/bad-format");
             }
 
 
             nextMessage:
             if (strlen(response) > 0) {
                 sendPacket(sock, response, currC);
-                printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Responding for request (sock %d): %s -> %s\n", buffer, id, sock, fullMessage, response);
+                printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Responding for request (sock %d): %s -> %s\n", time_formatted, id, sock, fullMessage, response);
                 memset(response, 0, PACKET_SIZE);
             }
             // shift the remainder following the current message to the beginning of recvBuf —
@@ -898,4 +918,75 @@ void* acceptMessage(void *arg) {
     if (currC) { unregisterClient(currC); free(currC); }
     close(sock);
     pthread_exit(NULL);
+}
+
+int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], int totalReceived, uint32_t n) {
+    // if user's length prefix is smaller than minimum overhead, packet is broken, do exit and notify user
+    // if user's length prefix is bigger than maximum packet size, packet is broken, exit and notify user
+    if (n < 4 + 16 + 24 || n > PACKET_SIZE) return -1;
+
+    unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+    long currentUserId = 0;
+    size_t out_length = 0;
+
+    {
+        // Finding and assigning current client
+        pthread_mutex_lock(&clientsMutex);
+        ClientSession *curr2 = activeClients;
+        while (curr2) {
+            if (curr2->sock == sock) {
+                currC = curr2;
+                currentUserId = curr2->userId;
+                memcpy(serverSessionKey, curr2->serverSessionKey, sizeof(curr2->serverSessionKey));
+            }
+            curr2 = curr2->next;
+        }
+        pthread_mutex_unlock(&clientsMutex);
+    }
+    {
+        // Finding and assigning current file upload
+        pthread_mutex_lock(&filesMutex);
+        FileUpload *curr2 = activeUploads;
+        while (curr2) {
+            if (curr2->userId > 0 && curr2->userId == currentUserId) {
+                currF = curr2;
+            }
+            curr2 = curr2->next;
+        }
+        pthread_mutex_unlock(&filesMutex);
+    }
+
+    // checking for user's authorization
+    if (currC != NULL && currF != NULL && currC->sock == sock && currC->hasSessionKey == true && currC->loggedIn == true && currF->allowedToUpload == true) {
+        if (DecryptBinary(serverSessionKey, recvBuf, PACKET_SIZE, fullMessage, PACKET_SIZE, &out_length)) {
+            if (out_length != currF->chunkSize) return -2;
+
+            char binary_path[PATH_MAX] = {0};
+            char files_dir[PATH_MAX] = {0};
+            ssize_t len = readlink("/proc/self/exe", binary_path, sizeof(binary_path)-1);
+            if (len > 0) {
+                binary_path[len] = '\0';
+                snprintf(files_dir, sizeof(files_dir), "%s/files", dirname(binary_path));
+            } else {
+                strcpy(files_dir, "files");
+            }
+
+            FILE *f = fopen(files_dir, "ab");
+            if (!f) { printf(RED "[%s][PROCESS BINARY]" RESET " Failed to open file (path = %s)", time_formatted, files_dir); return -3; }
+
+            size_t written = fwrite(&fullMessage, 1, out_length, f);
+            if (written != out_length) {
+                printf(RED "[%s][PROCESS BINARY]" RESET " Failed to write user's data to file (%ld of %ld bytes processed)", time_formatted, written, out_length);
+                fclose(f);
+                return -4;
+            }
+
+            if (fclose(f) != 0) {
+                printf(RED "[%s][PROCESS BINARY]" RESET " Failed to close file (write data on disk)", time_formatted);
+                return -5;
+            }
+        }
+    } else {
+        printf(RED "[%s][PROCESS BINARY]" RESET " User's (%ld) authorization failed.", time_formatted, currentUserId);
+    }
 }

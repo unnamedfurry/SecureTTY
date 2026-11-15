@@ -92,36 +92,35 @@ bool EncryptPacket(const char* plaintext, char* out_ciphertext, size_t max_out_s
     return true;
 }
 
-// Пишет в out: "enc:" + nonce(24) + ciphertext(len + 16).
-// Возвращает длину пакета через out_len. Это НЕ C-строка!
-bool EncryptPacketRaw(unsigned char* plaintext, unsigned char* out,
+// Writing to out: "bnc:" + nonce(24) + ciphertext(len + 16).
+// Returns packet size (out_len). Not a C-string.
+bool EncryptBinary(unsigned char* in, size_t in_len, unsigned char* out,
                       size_t max_out_size, size_t* out_len) {
-    const size_t len = strlen(plaintext);
 
     if (!hasSessionKey) {
         // Key isnt available yet - send as it is
-        if (len + 1 > max_out_size) return false;
-        memcpy(out, plaintext, len + 1);
-        *out_len = len;
+        if (in_len + 1 > max_out_size) return false;
+        memcpy(out, in, in_len + 1);
+        *out_len = in_len;
         return true;
     }
 
-    const size_t prefix_len = 4; // "enc:"
+    const size_t prefix_len = 4; // "bnc:"
     const size_t nonce_len  = crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
-    const size_t needed = prefix_len + nonce_len + len
+    const size_t needed = prefix_len + nonce_len + in_len
                         + crypto_aead_xchacha20poly1305_ietf_ABYTES;
     if (needed > max_out_size) return false;
 
-    memcpy(out, "enc:", prefix_len);
+    memcpy(out, "bnc:", prefix_len);
 
     unsigned char* nonce = out + prefix_len;
     randombytes_buf(nonce, nonce_len);
 
-    // Encrypting directly into output buffer, without mid-buffers
+    // Encrypting directly into output buffer, without b64
     unsigned long long ciphertext_len = 0;
     if (crypto_aead_xchacha20poly1305_ietf_encrypt(
             nonce + nonce_len, &ciphertext_len,
-            (const unsigned char*)plaintext, len,
+            (const unsigned char*)in, in_len,
             nullptr, 0, nullptr, nonce, clientSessionKey) != 0) {
         return false;
             }
