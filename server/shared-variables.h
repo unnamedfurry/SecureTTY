@@ -59,7 +59,7 @@ typedef struct ClientSession {
 } ClientSession;
 
 typedef struct FileUpload {
-    char name[128];
+    char path[128];
     char hashHex[BLAKE3_OUT_LEN * 2 + 1];
     size_t fileSize;
     size_t chunkSize;

@@ -66,7 +66,7 @@ bool DecryptBinary(unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_
     const size_t ct_len        = in_len - prefix_len - nonce_len;
     const size_t pt_len        = ct_len - abytes;
 
-    if (pt_len + 1 > max_out_size) return false;
+    if (pt_len > max_out_size) return false;
 
     unsigned long long decrypted_len = 0;
     if (crypto_aead_xchacha20poly1305_ietf_decrypt(
@@ -78,7 +78,6 @@ bool DecryptBinary(unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_
         return false;           // MAC did not match: wrong key or compromised packet
     }
 
-    out_plain[decrypted_len] = '\0';
     *out_len = (size_t)decrypted_len;
     return true;
 }

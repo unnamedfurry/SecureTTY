@@ -113,9 +113,9 @@ void removeUpload(FileUpload *target, const char *files_dir, bool deleteUnfinish
 
     if (!found) return;              // already removed, prevent double free
 
-    if (deleteUnfinished && target->read_offset < target->fileSize && target->name[0]) {
+    if (deleteUnfinished && target->read_offset < target->fileSize && target->path[0]) {
         char path[PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", files_dir, target->name);
+        snprintf(path, sizeof(path), "%s/%s", files_dir, target->path);
         unlink(path);
     }
     free(target);

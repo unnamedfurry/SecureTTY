@@ -46,7 +46,7 @@ extern char* getUserFromDB(long userId);
 extern bool sendFriendRequest(long senderId, long receiverId);
 extern bool acceptFriendRequest(long receiverId, long senderId);
 
-int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], uint32_t n, char* return_path);
+int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], uint32_t n, unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES], long currentUserId);
 void* acceptMessage(void *arg) {
     int sock = *(int*)arg;
     free(arg);
@@ -89,56 +89,116 @@ void* acceptMessage(void *arg) {
         recvBuf[totalReceived] = '\0';
 
         if (totalReceived >= 8 && strncmp(recvBuf+4, "bnc:", 4) == 0) {
+            unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+            long currentUserId = 0;
+            {
+                // Finding and assigning current client
+                pthread_mutex_lock(&clientsMutex);
+                ClientSession *curr2 = activeClients;
+                while (curr2) {
+                    if (curr2->sock == sock) {
+                        currC = curr2;
+                        currentUserId = curr2->userId;
+                        memcpy(serverSessionKey, curr2->serverSessionKey, sizeof(curr2->serverSessionKey));
+                    }
+                    curr2 = curr2->next;
+                }
+                pthread_mutex_unlock(&clientsMutex);
+            }
+            {
+                // Finding and assigning current file upload
+                pthread_mutex_lock(&filesMutex);
+                FileUpload *curr2 = activeUploads;
+                while (curr2) {
+                    if (curr2->userId > 0 && curr2->userId == currentUserId) {
+                        currF = curr2;
+                    }
+                    curr2 = curr2->next;
+                }
+                pthread_mutex_unlock(&filesMutex);
+            }
+
             uint32_t n = 0;
             memcpy(&n, recvBuf, 4);
             n = ntohl(n);
             if (totalReceived < 4+n) continue; // not enough data yet
-            char *path = nullptr;
             bool deleteFile = false;
 
-            int code = processBinary(currC, currF, sock, time_formatted, recvBuf, fullMessage, n, path);
+            int code = processBinary(currC, currF, sock, time_formatted, recvBuf+4, fullMessage, n, serverSessionKey, currentUserId);
             switch (code) {
 
                 case 0:
                     memset(recvBuf, 0, PACKET_SIZE);
                     memset(localBuf, 0, BUFFER_SIZE);
                     memset(fullMessage, 0, PACKET_SIZE);
-                    break;
+                    totalReceived = 0;
+                    snprintf(response, sizeof(response), "uploadFile/continue");
+                    goto next_message;
 
                 case -1:
+                    memset(recvBuf, 0, PACKET_SIZE);
+                    memset(localBuf, 0, BUFFER_SIZE);
+                    memset(fullMessage, 0, PACKET_SIZE);
+                    totalReceived = 0;
                     snprintf(response, sizeof(response), "uploadFile/error/bad-packet-math");
                     break;
 
                 case -2:
+                    memset(recvBuf, 0, PACKET_SIZE);
+                    memset(localBuf, 0, BUFFER_SIZE);
+                    memset(fullMessage, 0, PACKET_SIZE);
+                    totalReceived = 0;
                     snprintf(response, sizeof(response), "uploadFile/error/bad-file-math");
                     break;
 
                 case -3:
+                    memset(recvBuf, 0, PACKET_SIZE);
+                    memset(localBuf, 0, BUFFER_SIZE);
+                    memset(fullMessage, 0, PACKET_SIZE);
+                    totalReceived = 0;
                     snprintf(response, sizeof(response), "uploadFile/error/open-path");
                     break;
 
                 case -4:
+                    memset(recvBuf, 0, PACKET_SIZE);
+                    memset(localBuf, 0, BUFFER_SIZE);
+                    memset(fullMessage, 0, PACKET_SIZE);
+                    totalReceived = 0;
                     snprintf(response, sizeof(response), "uploadFile/error/write-data");
                     deleteFile=true;
                     break;
 
                 case -5:
+                    memset(recvBuf, 0, PACKET_SIZE);
+                    memset(localBuf, 0, BUFFER_SIZE);
+                    memset(fullMessage, 0, PACKET_SIZE);
+                    totalReceived = 0;
                     snprintf(response, sizeof(response), "uploadFile/error/close-file");
                     deleteFile=true;
                     break;
 
                 case -6:
+                    memset(recvBuf, 0, PACKET_SIZE);
+                    memset(localBuf, 0, BUFFER_SIZE);
+                    memset(fullMessage, 0, PACKET_SIZE);
+                    totalReceived = 0;
                     snprintf(response, sizeof(response), "uploadFile/error/decryption-failed");
                     break;
 
                 case -7:
+                    memset(recvBuf, 0, PACKET_SIZE);
+                    memset(localBuf, 0, BUFFER_SIZE);
+                    memset(fullMessage, 0, PACKET_SIZE);
+                    totalReceived = 0;
                     snprintf(response, sizeof(response), "uploadFile/error/unauthorized");
                     break;
             }
-            removeUpload(currF, path, deleteFile);
+            removeUpload(currF, currF->path, deleteFile);
+            next_message:
             sendPacket(sock, response, currC);
             printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Responding for request (sock %d): %s -> %s\n", time_formatted, id, sock, fullMessage, response);
             memset(response, 0, PACKET_SIZE);
+            continue;
         }
 
         // multiple newline-separated messages might arrive in a single read() —
@@ -223,7 +283,7 @@ void* acceptMessage(void *arg) {
                 if (!currC) {
 
                     // Checking for space
-                    currC = malloc(sizeof(ClientSession));
+                    currC = calloc(1, sizeof(ClientSession));
                     if (!currC) { snprintf(response, sizeof(response), "keyexchange/error"); goto nextMessage; }
 
                     // Creating new user
@@ -858,12 +918,12 @@ void* acceptMessage(void *arg) {
                 if (!currF) {
 
                     // Checking for space
-                    currF = malloc(sizeof(ClientSession));
+                    currF = calloc(1, sizeof(FileUpload));
                     if (!currF) { snprintf(response, sizeof(response), "check-space/error"); goto nextMessage; }
 
                     // Creating new file
-                    currF->userId = 0; // not allowed yet
                     pthread_mutex_lock(&filesMutex);
+                    currF->userId = currentUserId;
                     currF->next = activeUploads;
                     activeUploads = currF;
                     pthread_mutex_unlock(&filesMutex);
@@ -884,7 +944,7 @@ void* acceptMessage(void *arg) {
                 }
                 // Writing result to struct and sending it
                 pthread_mutex_lock(&filesMutex);
-                currF->allowedToUpload = ok; if (ok) currF->userId = currentUserId;
+                currF->allowedToUpload = ok;
                 pthread_mutex_unlock(&filesMutex);
                 snprintf(response, sizeof(response), ok ? "check-space/allowed" : "check-space/prohibited");
             }
@@ -936,17 +996,34 @@ void* acceptMessage(void *arg) {
 
                 // Name check
                 size_t nameLen = strlen(parts[3]);
-                if (nameLen == 0 || nameLen >= sizeof(currF->name) ||
+                if (nameLen == 0 || nameLen >= sizeof(currF->path) ||
                     strchr(parts[3], '/') || strchr(parts[3], '\\') ||
                     strstr(parts[3], "..")) {
                     goto badParams;
                 }
 
+                char binary_path[PATH_MAX] = {0};
+                char files_dir[PATH_MAX] = {0};
+                ssize_t len = readlink("/proc/self/exe", binary_path, sizeof(binary_path)-1);
+                if (len > 0) {
+                    binary_path[len] = '\0';
+                    snprintf(files_dir, sizeof(files_dir), "%s/files", dirname(binary_path));
+                    mkdir(files_dir, 0755);
+                } else {
+                    strcpy(files_dir, "files");
+                    mkdir(files_dir, 0755);
+                }
+                snprintf(files_dir+strlen(files_dir), sizeof(files_dir)-strlen(files_dir), "/%ld", currentUserId);
+                mkdir(files_dir, 0755);
+
+                char filepath[PATH_MAX] = {0};
+                snprintf(filepath, sizeof(filepath), "%s/%s", files_dir, parts[3]);
+
                 pthread_mutex_lock(&filesMutex);
                 currF->steps = (int)steps;
                 currF->chunkSize = chunkSize;
                 currF->fileSize = fileSize;
-                snprintf(currF->name, sizeof(currF->name), "%s", parts[3]);
+                snprintf(currF->path, sizeof(currF->path), "%s", filepath);
                 pthread_mutex_unlock(&filesMutex);
                 goto nextMessage;
 
@@ -973,7 +1050,7 @@ void* acceptMessage(void *arg) {
                 }
 
                 char filepath[PATH_MAX];
-                snprintf(filepath, sizeof(filepath), "%s/%s", files_dir, currF->name);
+                snprintf(filepath, sizeof(filepath), "%s/%s", files_dir, currF->path);
 
                 char *hashHex = fullMessage+16;
                 if (strncmp(hashHex, currF->hashHex, BLAKE3_OUT_LEN * 2 + 1) != 0) {
@@ -1016,52 +1093,24 @@ void* acceptMessage(void *arg) {
     }
 
     client_disconnect:
-    if (currC) { unregisterClient(currC); free(currC); }
+    if (currC) { unregisterClient(currC); }
+    if (currF) { removeUpload(currF, currF->path, true); }
     close(sock);
     pthread_exit(NULL);
 }
 
-int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], uint32_t n, char* return_path) {
+int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], uint32_t n, unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES], long currentUserId) {
     // if user's length prefix is smaller than minimum overhead, packet is broken, do exit and notify user
     // if user's length prefix is bigger than maximum packet size, packet is broken, exit and notify user
-    if (n < 4 + 16 + 24 || n > PACKET_SIZE) { printf(RED "[%s][PROCESS BINARY]" RESET " Bad packet math\n"); return -1; } // bad packet math
+    if (n < 4 + 16 + 24 || n > PACKET_SIZE) { printf(RED "[%s][PROCESS BINARY]" RESET " Bad packet math\n", time_formatted); return -1; } // bad packet math
 
-    unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
-    long currentUserId = 0;
     size_t out_length = 0;
-
-    {
-        // Finding and assigning current client
-        pthread_mutex_lock(&clientsMutex);
-        ClientSession *curr2 = activeClients;
-        while (curr2) {
-            if (curr2->sock == sock) {
-                currC = curr2;
-                currentUserId = curr2->userId;
-                memcpy(serverSessionKey, curr2->serverSessionKey, sizeof(curr2->serverSessionKey));
-            }
-            curr2 = curr2->next;
-        }
-        pthread_mutex_unlock(&clientsMutex);
-    }
-    {
-        // Finding and assigning current file upload
-        pthread_mutex_lock(&filesMutex);
-        FileUpload *curr2 = activeUploads;
-        while (curr2) {
-            if (curr2->userId > 0 && curr2->userId == currentUserId) {
-                currF = curr2;
-            }
-            curr2 = curr2->next;
-        }
-        pthread_mutex_unlock(&filesMutex);
-    }
 
     // checking for user's authorization
     if (currC != NULL && currF != NULL && currC->sock == sock && currC->hasSessionKey == true && currC->loggedIn == true && currF->allowedToUpload == true) {
         if (DecryptBinary(serverSessionKey, (const unsigned char*)recvBuf, n, (unsigned char*)fullMessage, MAX_CHUNK_SIZE, &out_length)) {
 
-            if (out_length != currF->chunkSize || currF->read_offset < currF->fileSize || currF->steps < 0)  { printf(RED "[%s][PROCESS BINARY]" RESET " Bad file math\n"); return -2; } // bad file math
+            if (out_length != currF->chunkSize || currF->read_offset + out_length > currF->fileSize || currF->steps < 0)  { printf(RED "[%s][PROCESS BINARY]" RESET " Bad file math\n", time_formatted); return -2; } // bad file math
 
             // validating file chunk's hash
             uint8_t raw_hash[BLAKE3_OUT_LEN];
@@ -1072,25 +1121,10 @@ int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_f
             snprintf(currF->hashHex, BLAKE3_OUT_LEN * 2 + 1, "%s", hashHex);
             pthread_mutex_unlock(&filesMutex);
 
-            char binary_path[PATH_MAX] = {0};
-            char files_dir[PATH_MAX] = {0};
-            ssize_t len = readlink("/proc/self/exe", binary_path, sizeof(binary_path)-1);
-            if (len > 0) {
-                binary_path[len] = '\0';
-                snprintf(files_dir, sizeof(files_dir), "%s/files/%ld", dirname(binary_path), currentUserId);
-            } else {
-                strcpy(files_dir, "files");
-            }
+            FILE *f = fopen(currF->path, currF->read_offset==0 ? "wb" : "ab");
+            if (!f) { printf(RED "[%s][PROCESS BINARY]" RESET " Failed to open file (path = %s)\n", time_formatted, currF->path); return -3; }
 
-            mkdir(files_dir, 0755);
-            char filepath[PATH_MAX];
-            snprintf(filepath, sizeof(filepath), "%s/%s", files_dir, currF->name);
-            return_path=filepath;
-
-            FILE *f = fopen(filepath, "ab");
-            if (!f) { printf(RED "[%s][PROCESS BINARY]" RESET " Failed to open file (path = %s)\n", time_formatted, files_dir); return -3; }
-
-            size_t written = fwrite(&fullMessage, 1, out_length, f);
+            size_t written = fwrite(fullMessage, 1, out_length, f);
             if (written != out_length) {
                 printf(RED "[%s][PROCESS BINARY]" RESET " Failed to write user's data to file (%ld of %ld bytes processed)\n", time_formatted, written, out_length);
                 fclose(f);
