@@ -70,18 +70,25 @@ bool appendf(char *buf, size_t size, size_t *off, const char *fmt, ...) {
     return true;
 }
 
-size_t binlen(char *in_data, size_t max_length) {
-    size_t counter = 0;
-    bool shouldContinue = true;
-
-    while (shouldContinue && counter < max_length) {
-        shouldContinue=false;
-        size_t blockSize = strlen(in_data+counter);
-        counter+=blockSize;
-        for (int i=0; i<5; i++) {
-            if (in_data[counter+i] != '\0') shouldContinue=true;
-        }
+void bytes_to_hex_string(const uint8_t *hash_bytes, char *output_buffer) {
+    for (int i = 0; i < BLAKE3_OUT_LEN; i++) {
+        // %02x converts 1 byte into 2 hexadecimal characters (e.g., 15 -> "0f")
+        // Writing occurs at offset i * 2 in your buffer
+        sprintf(output_buffer + (i * 2), "%02x", hash_bytes[i]);
     }
+    // Make sure to null-terminate the string so that functions like printf or strlen work correctly
+    output_buffer[BLAKE3_OUT_LEN * 2] = '\0';
+}
 
-    return counter;
+void get_blake3_hash(const char *input, size_t input_len, uint8_t output[BLAKE3_OUT_LEN]) {
+    blake3_hasher hasher;
+
+    // Initializing hasher
+    blake3_hasher_init(&hasher);
+
+    // Transmit data (size strictly in bytes; suitable for binary packets)
+    blake3_hasher_update(&hasher, input, input_len);
+
+    // Export the final hash
+    blake3_hasher_finalize(&hasher, output, BLAKE3_OUT_LEN);
 }

@@ -23,6 +23,7 @@ size_t offset = 0;
 size_t fileSize = 0;
 int steps = 1;
 int progress = 0;
+// maximum packet size should NOT BE more than (25L * 1024 * 1024)
 int packetSize = 1 * 1024 * 1024;
 
 int UploadFile(char* filePath) {
@@ -60,31 +61,30 @@ int UploadFile(char* filePath) {
         snprintf(infoPacket, 256, "uploadFileInfo/%d/%lu/%lu/%s", steps, chunkSize, fileSize, name);
         sendMessage(infoPacket);
 
-        unsigned char *packet = malloc(16 + chunkSize);
+        unsigned char *packet = malloc(chunkSize);
         if (!packet) { fclose(file); return -2; }
 
         for (int i = 0; i < steps; i++) {
-            memcpy(packet, "uploadFileData/", 15);
 
             // Read file and memcpy data to packet
-            size_t n = fread(packet + 15, chunkSize, 1, file);
+            size_t n = fread(packet, 1, chunkSize, file);
             if (n == 0) break;
 
-            if (!sendBinaryMessage(packet, 15 + n)) {
+            if (!sendBinaryMessage(packet, n)) {
                 free(packet); fclose(file); return -4;
             }
             offset += n;
 
             uint8_t raw_hash[BLAKE3_OUT_LEN];
             char hashHex[BLAKE3_OUT_LEN * 2 + 1];
-            get_blake3_hash((const char*)packet + 15, n, raw_hash);
+            get_blake3_hash((const char*)packet, n, raw_hash);
             bytes_to_hex_string(raw_hash, hashHex);
 
             char checkPacket[128];
-            snprintf(checkPacket, sizeof checkPacket, "uploadFileCheck/%zu,%s", n, hashHex);
+            snprintf(checkPacket, sizeof checkPacket, "uploadFileCheck/%s", hashHex);
             sendMessage(checkPacket);
 
-            memset(packet, 0, 15+chunkSize);
+            memset(packet, 0, chunkSize);
         }
         free(packet);
         fclose(file);

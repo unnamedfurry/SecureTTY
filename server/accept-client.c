@@ -31,6 +31,9 @@ extern bool sendPacket(int sock, const char *data, ClientSession *curr);
 extern char* Base64Encode(const unsigned char* input, int length);
 extern unsigned char* Base64Decode(const char* input, int* out_len);
 extern bool appendf(char *buf, size_t size, size_t *off, const char *fmt, ...);
+extern void get_blake3_hash(const char *input, size_t input_len, uint8_t output[BLAKE3_OUT_LEN]);
+extern void bytes_to_hex_string(const uint8_t *hash_bytes, char *output_buffer);
+extern void removeUpload(FileUpload *target, const char *files_dir, bool deleteUnfinished);
 
 // Client actions
 extern bool pushToUser(long userId, const char *data, ClientSession *curr);
@@ -43,7 +46,7 @@ extern char* getUserFromDB(long userId);
 extern bool sendFriendRequest(long senderId, long receiverId);
 extern bool acceptFriendRequest(long receiverId, long senderId);
 
-int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], int totalReceived, uint32_t n);
+int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], uint32_t n, char* return_path);
 void* acceptMessage(void *arg) {
     int sock = *(int*)arg;
     free(arg);
@@ -89,9 +92,53 @@ void* acceptMessage(void *arg) {
             uint32_t n = 0;
             memcpy(&n, recvBuf, 4);
             n = ntohl(n);
-            if (totalReceived < n) continue; // not enough data yet
+            if (totalReceived < 4+n) continue; // not enough data yet
+            char *path = nullptr;
+            bool deleteFile = false;
 
-            processBinary(currC, currF, sock, time_formatted, recvBuf, fullMessage, totalReceived, n);
+            int code = processBinary(currC, currF, sock, time_formatted, recvBuf, fullMessage, n, path);
+            switch (code) {
+
+                case 0:
+                    memset(recvBuf, 0, PACKET_SIZE);
+                    memset(localBuf, 0, BUFFER_SIZE);
+                    memset(fullMessage, 0, PACKET_SIZE);
+                    break;
+
+                case -1:
+                    snprintf(response, sizeof(response), "uploadFile/error/bad-packet-math");
+                    break;
+
+                case -2:
+                    snprintf(response, sizeof(response), "uploadFile/error/bad-file-math");
+                    break;
+
+                case -3:
+                    snprintf(response, sizeof(response), "uploadFile/error/open-path");
+                    break;
+
+                case -4:
+                    snprintf(response, sizeof(response), "uploadFile/error/write-data");
+                    deleteFile=true;
+                    break;
+
+                case -5:
+                    snprintf(response, sizeof(response), "uploadFile/error/close-file");
+                    deleteFile=true;
+                    break;
+
+                case -6:
+                    snprintf(response, sizeof(response), "uploadFile/error/decryption-failed");
+                    break;
+
+                case -7:
+                    snprintf(response, sizeof(response), "uploadFile/error/unauthorized");
+                    break;
+            }
+            removeUpload(currF, path, deleteFile);
+            sendPacket(sock, response, currC);
+            printf(GREEN "[%s][ACCEPT MESSAGE][Thread %lu]" RESET " Responding for request (sock %d): %s -> %s\n", time_formatted, id, sock, fullMessage, response);
+            memset(response, 0, PACKET_SIZE);
         }
 
         // multiple newline-separated messages might arrive in a single read() —
@@ -807,6 +854,21 @@ void* acceptMessage(void *arg) {
                 printf("[%s][GET CLIENT UPDATES] Sent friend request update for %ld: %s\n", time_formatted, userId, response);
             } else if (strncmp(fullMessage, "check-space/", 12) == 0) {
 
+                // Initializing file upload
+                if (!currF) {
+
+                    // Checking for space
+                    currF = malloc(sizeof(ClientSession));
+                    if (!currF) { snprintf(response, sizeof(response), "check-space/error"); goto nextMessage; }
+
+                    // Creating new file
+                    currF->userId = 0; // not allowed yet
+                    pthread_mutex_lock(&filesMutex);
+                    currF->next = activeUploads;
+                    activeUploads = currF;
+                    pthread_mutex_unlock(&filesMutex);
+                }
+
                 const char *p = fullMessage + 12;
                 char *end;
                 errno = 0;
@@ -822,7 +884,7 @@ void* acceptMessage(void *arg) {
                 }
                 // Writing result to struct and sending it
                 pthread_mutex_lock(&filesMutex);
-                if (currF) { currF->allowedToUpload = ok; if (ok) currF->userId = currentUserId; }
+                currF->allowedToUpload = ok; if (ok) currF->userId = currentUserId;
                 pthread_mutex_unlock(&filesMutex);
                 snprintf(response, sizeof(response), ok ? "check-space/allowed" : "check-space/prohibited");
             }
@@ -877,7 +939,6 @@ void* acceptMessage(void *arg) {
                 if (nameLen == 0 || nameLen >= sizeof(currF->name) ||
                     strchr(parts[3], '/') || strchr(parts[3], '\\') ||
                     strstr(parts[3], "..")) {
-                    currF->allowedToUpload=false;
                     goto badParams;
                 }
 
@@ -890,8 +951,48 @@ void* acceptMessage(void *arg) {
                 goto nextMessage;
 
                 badParams:
+                currF->allowedToUpload=false;
                 printf(RED "[%s][UPLOAD]" RESET " %d sent invalid upload parameters\n", time_formatted, sock);
                 snprintf(response, sizeof(response), "uploadFileInfo/banned/bad-format");
+            }
+            else if (strncmp(fullMessage, "uploadFileCheck/", 16) == 0) {
+                // Checking secure connection state
+                if (currF == nullptr || currF->allowedToUpload==false || currF->userId!=currentUserId) {
+                    printf(RED "[%s][PREPARE FILE DOWNLOAD]" RESET " %d attempted unauthorized file saving\n", time_formatted, sock);
+                    goto nextMessage;
+                }
+
+                char binary_path[PATH_MAX] = {0};
+                char files_dir[PATH_MAX] = {0};
+                ssize_t len = readlink("/proc/self/exe", binary_path, sizeof(binary_path)-1);
+                if (len > 0) {
+                    binary_path[len] = '\0';
+                    snprintf(files_dir, sizeof(files_dir), "%s/files/%ld", dirname(binary_path), currentUserId);
+                } else {
+                    strcpy(files_dir, "files");
+                }
+
+                char filepath[PATH_MAX];
+                snprintf(filepath, sizeof(filepath), "%s/%s", files_dir, currF->name);
+
+                char *hashHex = fullMessage+16;
+                if (strncmp(hashHex, currF->hashHex, BLAKE3_OUT_LEN * 2 + 1) != 0) {
+
+                    // Deleting current instance and clearing out unfinished file
+                    removeUpload(currF, filepath, true);
+                    goto nextMessage;
+                }
+
+                if (currF->steps == 0) {
+                    if (currF->fileSize != currF->read_offset) {
+
+                        // same process
+                        removeUpload(currF, filepath, true);
+                        goto nextMessage;
+                    }
+                }
+
+                snprintf(response, sizeof(response), "uploadFileCheck/continue");
             }
 
 
@@ -920,10 +1021,10 @@ void* acceptMessage(void *arg) {
     pthread_exit(NULL);
 }
 
-int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], int totalReceived, uint32_t n) {
+int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_formatted[80], char recvBuf[PACKET_SIZE], char fullMessage[PACKET_SIZE], uint32_t n, char* return_path) {
     // if user's length prefix is smaller than minimum overhead, packet is broken, do exit and notify user
     // if user's length prefix is bigger than maximum packet size, packet is broken, exit and notify user
-    if (n < 4 + 16 + 24 || n > PACKET_SIZE) return -1;
+    if (n < 4 + 16 + 24 || n > PACKET_SIZE) { printf(RED "[%s][PROCESS BINARY]" RESET " Bad packet math\n"); return -1; } // bad packet math
 
     unsigned char serverSessionKey[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
     long currentUserId = 0;
@@ -958,35 +1059,60 @@ int processBinary(ClientSession *currC, FileUpload *currF, int sock, char time_f
 
     // checking for user's authorization
     if (currC != NULL && currF != NULL && currC->sock == sock && currC->hasSessionKey == true && currC->loggedIn == true && currF->allowedToUpload == true) {
-        if (DecryptBinary(serverSessionKey, recvBuf, PACKET_SIZE, fullMessage, PACKET_SIZE, &out_length)) {
-            if (out_length != currF->chunkSize) return -2;
+        if (DecryptBinary(serverSessionKey, (const unsigned char*)recvBuf, n, (unsigned char*)fullMessage, MAX_CHUNK_SIZE, &out_length)) {
+
+            if (out_length != currF->chunkSize || currF->read_offset < currF->fileSize || currF->steps < 0)  { printf(RED "[%s][PROCESS BINARY]" RESET " Bad file math\n"); return -2; } // bad file math
+
+            // validating file chunk's hash
+            uint8_t raw_hash[BLAKE3_OUT_LEN];
+            char hashHex[BLAKE3_OUT_LEN * 2 + 1];
+            get_blake3_hash((const char*)fullMessage, out_length, raw_hash);
+            bytes_to_hex_string(raw_hash, hashHex);
+            pthread_mutex_lock(&filesMutex);
+            snprintf(currF->hashHex, BLAKE3_OUT_LEN * 2 + 1, "%s", hashHex);
+            pthread_mutex_unlock(&filesMutex);
 
             char binary_path[PATH_MAX] = {0};
             char files_dir[PATH_MAX] = {0};
             ssize_t len = readlink("/proc/self/exe", binary_path, sizeof(binary_path)-1);
             if (len > 0) {
                 binary_path[len] = '\0';
-                snprintf(files_dir, sizeof(files_dir), "%s/files", dirname(binary_path));
+                snprintf(files_dir, sizeof(files_dir), "%s/files/%ld", dirname(binary_path), currentUserId);
             } else {
                 strcpy(files_dir, "files");
             }
 
-            FILE *f = fopen(files_dir, "ab");
-            if (!f) { printf(RED "[%s][PROCESS BINARY]" RESET " Failed to open file (path = %s)", time_formatted, files_dir); return -3; }
+            mkdir(files_dir, 0755);
+            char filepath[PATH_MAX];
+            snprintf(filepath, sizeof(filepath), "%s/%s", files_dir, currF->name);
+            return_path=filepath;
+
+            FILE *f = fopen(filepath, "ab");
+            if (!f) { printf(RED "[%s][PROCESS BINARY]" RESET " Failed to open file (path = %s)\n", time_formatted, files_dir); return -3; }
 
             size_t written = fwrite(&fullMessage, 1, out_length, f);
             if (written != out_length) {
-                printf(RED "[%s][PROCESS BINARY]" RESET " Failed to write user's data to file (%ld of %ld bytes processed)", time_formatted, written, out_length);
+                printf(RED "[%s][PROCESS BINARY]" RESET " Failed to write user's data to file (%ld of %ld bytes processed)\n", time_formatted, written, out_length);
                 fclose(f);
                 return -4;
             }
 
+            pthread_mutex_lock(&filesMutex);
+            currF->steps--;
+            currF->read_offset += written;
+            pthread_mutex_unlock(&filesMutex);
+
             if (fclose(f) != 0) {
-                printf(RED "[%s][PROCESS BINARY]" RESET " Failed to close file (write data on disk)", time_formatted);
+                printf(RED "[%s][PROCESS BINARY]" RESET " Failed to close file (write data on disk)\n", time_formatted);
                 return -5;
             }
+
+            return 0; // reset buffers
+        } else {
+            return -6; // continue
         }
     } else {
-        printf(RED "[%s][PROCESS BINARY]" RESET " User's (%ld) authorization failed.", time_formatted, currentUserId);
+        printf(RED "[%s][PROCESS BINARY]" RESET " User's (%ld) authorization failed\n", time_formatted, currentUserId);
+        return -7;
     }
 }

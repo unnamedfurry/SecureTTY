@@ -93,3 +93,30 @@ void unregisterClient(ClientSession *curr) {
     printf("[%s][NETWORK] client disconnected: userId=%ld\n", buffer, curr->userId);
     free(curr);
 }
+
+// removes current file upload and (optionally) unfinished file
+void removeUpload(FileUpload *target, const char *files_dir, bool deleteUnfinished) {
+    if (!target) return;
+
+    bool found = false;
+    pthread_mutex_lock(&filesMutex);
+    FileUpload **pp = &activeUploads;
+    while (*pp) {
+        if (*pp == target) {
+            *pp = target->next;      // removing from the list
+            found = true;
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+    pthread_mutex_unlock(&filesMutex);
+
+    if (!found) return;              // already removed, prevent double free
+
+    if (deleteUnfinished && target->read_offset < target->fileSize && target->name[0]) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/%s", files_dir, target->name);
+        unlink(path);
+    }
+    free(target);
+}
